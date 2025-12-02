@@ -10,6 +10,7 @@ import errorHandler  from "./middleware/errorMiddleware.js";
 import projectRoutes from "./routes/projectRoutes.js";
 import webhookRoutes from "./routes/webhookRoutes.js";
 import taskRoutes from "./routes/taskRoutes.js"; // Import Tasks
+import userRoutes from "./routes/userRoutes.js";
 
 dotenv.config();
 await connectDB();
@@ -30,6 +31,7 @@ app.use(limiter);
 app.use('/api/projects', projectRoutes);
 app.use('/api/tasks', taskRoutes); // Mount Tasks
 app.use('/api/webhooks', webhookRoutes);
+app.use('/api/users', userRoutes);
 
 app.get('/', (req, res) => {
     res.send('API is running...');
