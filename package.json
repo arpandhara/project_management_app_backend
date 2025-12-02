@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "backend for the project management app",
   "main": "index.js",
+  "type": "module",
   "scripts": {
   "start": "node index.js",
   "dev": "nodemon index.js"
