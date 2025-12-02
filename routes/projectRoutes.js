@@ -1,15 +1,16 @@
 import express from 'express';
 import validate from '../middleware/zodValidationMiddleWare.js';
-import { createProjectSchema } from '../schemas/projectSchema.js';
-import { getProjects, createProject, deleteProject } from '../controllers/projectController.js';
+import createProjectSchema  from '../schemas/projectSchema.js';
+import { getProjects, getProjectById, createProject, deleteProject } from '../controllers/projectController.js';
 import { requireAuth, requireRole } from '../middleware/authMiddleware.js';
 
 const router = express.Router();
 
-// Route: GET /api/projects
+// Public/Viewer Routes
 router.get('/', requireAuth, getProjects);
+router.get('/:id', requireAuth, getProjectById); 
 
-
+// Admin Routes
 router.post('/', 
   requireAuth, 
   requireRole(['admin']), 
@@ -17,7 +18,6 @@ router.post('/',
   createProject
 );
 
-// Route: DELETE /api/projects/:id
 router.delete('/:id', 
   requireAuth, 
   requireRole(['admin']), 

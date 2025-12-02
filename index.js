@@ -4,33 +4,32 @@ import cors from 'cors';
 import helmet from 'helmet';
 import { rateLimit } from 'express-rate-limit';
 import connectDB from "./config/db.js";
-import { errorHandler } from "./middleware/errorMiddleware.js";
+import errorHandler  from "./middleware/errorMiddleware.js";
 
 // Import Routes
 import projectRoutes from "./routes/projectRoutes.js";
-import webhookRoutes from "./routes/webhookRoutes.js"; // Import webhooks
+import webhookRoutes from "./routes/webhookRoutes.js";
+import taskRoutes from "./routes/taskRoutes.js"; // Import Tasks
 
 dotenv.config();
-connectDB();
+await connectDB();
 
 const app = express();
 
-// Security
 app.use(helmet());
 app.use(cors());
+app.use(express.json()); 
 
-// Rate Limiting
 const limiter = rateLimit({
     windowMs: 15 * 60 * 1000,
     max: 100,
 });
 app.use(limiter);
 
-app.use(express.json()); 
-
 // Routes
 app.use('/api/projects', projectRoutes);
-app.use('/api/webhooks', webhookRoutes); // Mount webhook route
+app.use('/api/tasks', taskRoutes); // Mount Tasks
+app.use('/api/webhooks', webhookRoutes);
 
 app.get('/', (req, res) => {
     res.send('API is running...');
