@@ -12,7 +12,7 @@ const getProjects = async (req, res) => {
 
     let query;
 
-    if (orgId) {
+    if (orgId && orgId !== "undefined" && orgId !== "null") {
       // 🏢 ORGANIZATION MODE:
       // Fetch projects that belong to this specific Organization
       query = { orgId };
@@ -64,11 +64,11 @@ const createProject = async (req, res) => {
     const { title, description, status, priority, startDate, dueDate } = req.body;
     const { userId } = req.auth;
 
-    const orgId = req.auth.orgId || req.body.orgId || req.query.orgId;
+    const orgId = req.body.orgId || req.auth.orgId;
 
     const project = new Project({
       title,
-      description,
+      description :  description || "No Description",
       status,
       priority,
       startDate,
@@ -76,7 +76,7 @@ const createProject = async (req, res) => {
       ownerId: userId,
       
       // 👇 Save the Org ID if one is active. If not, it saves as undefined (Personal)
-      orgId: orgId || undefined, 
+      orgId: (orgId && orgId !== "undefined" && orgId !== "null") ? orgId : undefined,
       
       members: [userId] 
     });
