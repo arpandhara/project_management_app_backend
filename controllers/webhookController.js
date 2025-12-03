@@ -2,7 +2,6 @@ import { Webhook } from "svix";
 import User from "../models/User.js";
 
 export const clerkWebhook = async (req, res) => {
-  // Get the secret from your .env (You will get this from Clerk Dashboard later)
   const WEBHOOK_SECRET = process.env.CLERK_WEBHOOK_SECRET;
 
   if (!WEBHOOK_SECRET) {
@@ -19,16 +18,12 @@ export const clerkWebhook = async (req, res) => {
     return res.status(400).send("Error occurred -- no svix headers");
   }
 
-  const body = req.body; 
-  const payload = JSON.stringify(body); 
-
-
-  //Verify the Webhook Signature
+  // Use the raw body for verification
+  const payload = req.rawBody;
   const wh = new Webhook(WEBHOOK_SECRET);
   let evt;
 
   try {
-    // We pass the payload string and headers to verify it actually came from Clerk
     evt = wh.verify(payload, {
       "svix-id": svix_id,
       "svix-timestamp": svix_timestamp,
@@ -39,37 +34,57 @@ export const clerkWebhook = async (req, res) => {
     return res.status(400).json({ "Error": err.message });
   }
 
-  //Handle the Event
-  const eventType = evt.type;
+  // Handle the Event
+  const eventType = evt.data.type || evt.type; // Sometimes type is inside data or root
   const { id, email_addresses, username, first_name, last_name, image_url } = evt.data;
 
   console.log(`Webhook received: ${eventType}`);
 
   if (eventType === "user.created") {
     try {
+      // SAFEGUARD: Check if email exists to prevent crash
+      const primaryEmail = email_addresses?.[0]?.email_address;
+
+      if (!primaryEmail) {
+        console.log("Skipping user creation: No email found in webhook data.");
+        // Return 200 to tell Clerk "We got it, but we can't use it" (prevents retries)
+        return res.status(200).json({ message: "No email found, skipped DB save" });
+      }
+
       // Create new user in MongoDB
       const newUser = new User({
         clerkId: id,
-        email: email_addresses[0].email_address,
-        username: username || "",
+        email: primaryEmail,
+        username: username || id, // Fallback to ID if username is missing
         firstName: first_name || "",
         lastName: last_name || "",
         photo: image_url || "",
-        role: "member" // Default role
+        role: "member"
       });
 
       await newUser.save();
-      console.log("User created in DB:", newUser);
+      console.log("✅ User created in DB:", newUser);
+      
     } catch (error) {
-      console.error("Error saving user:", error);
-      return res.status(500).json({ message: "Database error" });
+      // If user already exists (duplicate key error), we consider it a success
+      if (error.code === 11000) {
+         console.log("User already exists in DB, skipping.");
+         return res.status(200).json({ message: "User already exists" });
+      }
+      console.error("❌ Error saving user:", error);
+      return res.status(500).json({ message: "Database error", error: error.message });
     }
-  } else if (eventType === "user.updated") {
+  } 
+  
+  else if (eventType === "user.updated") {
     try {
+      const primaryEmail = email_addresses?.[0]?.email_address;
+      
       await User.findOneAndUpdate(
         { clerkId: id },
         {
-          email: email_addresses[0].email_address,
+          // Only update email if it exists
+          ...(primaryEmail && { email: primaryEmail }),
           username: username,
           firstName: first_name,
           lastName: last_name,
@@ -81,7 +96,9 @@ export const clerkWebhook = async (req, res) => {
       console.error("Error updating user:", error);
       return res.status(500).json({ message: "Database error" });
     }
-  } else if (eventType === "user.deleted") {
+  } 
+  
+  else if (eventType === "user.deleted") {
     try {
       await User.findOneAndDelete({ clerkId: id });
       console.log("User deleted from DB");
