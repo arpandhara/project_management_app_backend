@@ -1,5 +1,6 @@
 import express from "express";
 import dotenv from "dotenv";
+dotenv.config();
 import cors from "cors";
 import helmet from "helmet";
 import { rateLimit } from "express-rate-limit";
@@ -13,7 +14,6 @@ import taskRoutes from "./routes/taskRoutes.js"; // Import Tasks
 import userRoutes from "./routes/userRoutes.js";
 import adminActionRoutes from "./routes/adminActionRoutes.js";
 
-dotenv.config();
 await connectDB();
 
 const app = express();
@@ -32,7 +32,7 @@ app.use(
 
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 100,
+  max: 5000,
 });
 app.use(limiter);
 

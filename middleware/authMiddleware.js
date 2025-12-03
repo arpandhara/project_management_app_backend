@@ -8,17 +8,23 @@ const requireAuth = ClerkExpressRequireAuth({
 
 const requireRole = (allowedRoles) => {
   return (req, res, next) => {
-    const { sessionClaims, orgRole } = req.auth;
+    const auth = req.auth;
+    
+    // 👇 1. Check for Organization Role (e.g., 'org:admin')
+    const orgRole = auth.orgRole || auth.sessionClaims?.org_role;
 
-    // 👇 1. Determine the effective role
-    // If we have an Org Role (org:admin / org:member), use it.
-    // Otherwise, fall back to Personal Metadata (admin).
-    const effectiveRole = orgRole || sessionClaims?.publicMetadata?.role || 'viewer';
+    // 👇 2. Check for Personal Admin Role (e.g., 'admin')
+    const personalRole = auth.sessionClaims?.publicMetadata?.role;
 
-    // 👇 2. Check if the role is in the allowed list
+    // 👇 3. Determine Effective Role (Prioritize Org, then Personal, then Viewer)
+    const effectiveRole = orgRole || personalRole || 'viewer';
+
+    // Debugging Log
+    console.log(`🔐 Auth Check | User: ${auth.userId} | Role Found: ${effectiveRole}`);
+
     if (!allowedRoles.includes(effectiveRole)) {
       return res.status(403).json({ 
-        message: `Access Denied. Required: ${allowedRoles.join(' or ')}. You are: ${effectiveRole}` 
+        message: `Access Denied. Required role: ${allowedRoles.join(' or ')}. You are: ${effectiveRole}` 
       });
     }
 
