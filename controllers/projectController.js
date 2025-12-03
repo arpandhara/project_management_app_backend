@@ -12,10 +12,12 @@ const getProjects = async (req, res) => {
 
     let query;
 
+    const targetUserId = req.query.userId || userId;
+
     if (orgId && orgId !== "undefined" && orgId !== "null") {
       // 🏢 ORGANIZATION MODE:
       // Fetch projects that belong to this specific Organization
-      query = { orgId };
+      query = { orgId , members: targetUserId};
     } else {
       // 👤 PERSONAL MODE:
       // Fetch projects owned by the user that DO NOT belong to an organization
@@ -111,9 +113,59 @@ const deleteProject = async (req, res) => {
   }
 };
 
+// @desc    Add a user to a project
+// @route   PUT /api/projects/:id/members
+const addProjectMember = async (req, res) => {
+  try {
+    const { email } = req.body; // We'll find them by email
+    const project = await Project.findById(req.params.id);
+    
+    if (!project) return res.status(404).json({ message: "Project not found" });
+
+    // Find the user by email (using your User model)
+    const User = (await import("../models/User.js")).default;
+    const userToAdd = await User.findOne({ email });
+
+    if (!userToAdd) {
+      return res.status(404).json({ message: "User not found in the system. They must sign up first." });
+    }
+
+    // Add to members array if not already there
+    if (!project.members.includes(userToAdd.clerkId)) {
+      project.members.push(userToAdd.clerkId);
+      await project.save();
+    }
+
+    res.json({ message: "Member added", member: userToAdd });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Server Error" });
+  }
+};
+
+// @desc    Get members of a specific project
+// @route   GET /api/projects/:id/members
+const getProjectMembers = async (req, res) => {
+  try {
+    const project = await Project.findById(req.params.id);
+    if (!project) return res.status(404).json({ message: "Project not found" });
+
+    // Fetch user details for all IDs in the members array
+    const User = (await import("../models/User.js")).default;
+    const members = await User.find({ clerkId: { $in: project.members } }).select("firstName lastName email photo clerkId");
+
+    res.json(members);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Server Error" });
+  }
+};
+
 export { 
   getProjects, 
   getProjectById, 
   createProject, 
-  deleteProject 
+  deleteProject,
+  addProjectMember,
+  getProjectMembers
 };

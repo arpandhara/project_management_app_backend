@@ -3,14 +3,15 @@ import dotenv from "dotenv";
 import cors from "cors";
 import helmet from "helmet";
 import { rateLimit } from "express-rate-limit";
-import connectDB from "./config/db.js";
-import errorHandler from "./middleware/errorMiddleware.js";
 
 // Import Routes
+import connectDB from "./config/db.js";
+import errorHandler from "./middleware/errorMiddleware.js";
 import projectRoutes from "./routes/projectRoutes.js";
 import webhookRoutes from "./routes/webhookRoutes.js";
 import taskRoutes from "./routes/taskRoutes.js"; // Import Tasks
 import userRoutes from "./routes/userRoutes.js";
+import adminActionRoutes from "./routes/adminActionRoutes.js";
 
 dotenv.config();
 await connectDB();
@@ -40,6 +41,7 @@ app.use("/api/projects", projectRoutes);
 app.use("/api/tasks", taskRoutes); // Mount Tasks
 app.use("/api/webhooks", webhookRoutes);
 app.use("/api/users", userRoutes);
+app.use('/api/admin-actions', adminActionRoutes);
 
 app.get("/", (req, res) => {
   res.send("API is running...");
