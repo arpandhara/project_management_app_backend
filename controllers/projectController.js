@@ -1,27 +1,18 @@
 import Project from '../models/Project.js';
+import { createClerkClient } from '@clerk/clerk-sdk-node';
+import User from "../models/User.js"; // Import User at the top
 
 // @desc    Get all projects
-// @route   GET /api/projects
-// @access  Public / Viewer
 const getProjects = async (req, res) => {
   try {
-    // Clerk automatically provides userId AND orgId (if an org is selected)
     const { userId } = req.auth; 
-
     const orgId = req.auth.orgId || req.query.orgId;
-
     let query;
-
     const targetUserId = req.query.userId || userId;
 
     if (orgId && orgId !== "undefined" && orgId !== "null") {
-      // 🏢 ORGANIZATION MODE:
-      // Fetch projects that belong to this specific Organization
       query = { orgId , members: targetUserId};
     } else {
-      // 👤 PERSONAL MODE:
-      // Fetch projects owned by the user that DO NOT belong to an organization
-      // (This prevents Org projects from showing up in Personal workspace)
       query = { 
         ownerId: userId, 
         orgId: { $exists: false } 
@@ -37,12 +28,9 @@ const getProjects = async (req, res) => {
 };
 
 // @desc    Get single project by ID
-// @route   GET /api/projects/:id
-// @access  Public / Viewer
 const getProjectById = async (req, res) => {
   try {
     const project = await Project.findById(req.params.id).lean();
-    
     if (project) {
       res.json(project);
     } else {
@@ -50,7 +38,6 @@ const getProjectById = async (req, res) => {
     }
   } catch (error) {
     console.error(error);
-    // Check if error is due to invalid ObjectId format
     if (error.kind === 'ObjectId') {
       return res.status(404).json({ message: 'Project not found' });
     }
@@ -59,13 +46,10 @@ const getProjectById = async (req, res) => {
 };
 
 // @desc    Create a new project
-// @route   POST /api/projects
-// @access  Admin Only
 const createProject = async (req, res) => {
   try {
     const { title, description, status, priority, startDate, dueDate } = req.body;
     const { userId } = req.auth;
-
     const orgId = req.body.orgId || req.auth.orgId;
 
     const project = new Project({
@@ -76,10 +60,7 @@ const createProject = async (req, res) => {
       startDate,
       dueDate,
       ownerId: userId,
-      
-      // 👇 Save the Org ID if one is active. If not, it saves as undefined (Personal)
       orgId: (orgId && orgId !== "undefined" && orgId !== "null") ? orgId : undefined,
-      
       members: [userId] 
     });
 
@@ -92,12 +73,9 @@ const createProject = async (req, res) => {
 };
 
 // @desc    Delete a project
-// @route   DELETE /api/projects/:id
-// @access  Admin Only
 const deleteProject = async (req, res) => {
   try {
     const project = await Project.findById(req.params.id);
-
     if (project) {
       await project.deleteOne();
       res.json({ message: 'Project removed' });
@@ -117,20 +95,47 @@ const deleteProject = async (req, res) => {
 // @route   PUT /api/projects/:id/members
 const addProjectMember = async (req, res) => {
   try {
-    const { email } = req.body; // We'll find them by email
+    const { email } = req.body; 
     const project = await Project.findById(req.params.id);
     
     if (!project) return res.status(404).json({ message: "Project not found" });
 
-    // Find the user by email (using your User model)
-    const User = (await import("../models/User.js")).default;
+    // 1. Find the user in local DB
     const userToAdd = await User.findOne({ email });
 
     if (!userToAdd) {
       return res.status(404).json({ message: "User not found in the system. They must sign up first." });
     }
 
-    // Add to members array if not already there
+    // 2. Check if User is a Member of the Organization
+    if (project.orgId) {
+      const clerkClient = createClerkClient({ secretKey: process.env.CLERK_SECRET_KEY });
+
+      // console.log(`🔍 Checking Membership | Org: ${project.orgId} | User: ${userToAdd.clerkId}`);
+
+      try {
+        const response = await clerkClient.organizations.getOrganizationMembershipList({
+          organizationId: project.orgId,
+          userId: [userToAdd.clerkId],
+        });
+
+        const memberships = Array.isArray(response) ? response : response.data;
+
+        if (!memberships || memberships.length === 0) {
+          throw new Error("User is not a member of this organization");
+        }
+
+        // console.log("✅ User is in Core Team");
+      } catch (error) {
+        // console.error("❌ Membership Check Failed:", error.message);
+        
+        return res.status(400).json({ 
+          message: "User is not in the Organization's Core Team. Please invite them to the Team first." 
+        });
+      }
+    }
+
+    // 3. Add to project members if passed checks
     if (!project.members.includes(userToAdd.clerkId)) {
       project.members.push(userToAdd.clerkId);
       await project.save();
@@ -138,20 +143,17 @@ const addProjectMember = async (req, res) => {
 
     res.json({ message: "Member added", member: userToAdd });
   } catch (error) {
-    console.error(error);
+    console.error("Server Error in addProjectMember:", error);
     res.status(500).json({ message: "Server Error" });
   }
 };
 
 // @desc    Get members of a specific project
-// @route   GET /api/projects/:id/members
 const getProjectMembers = async (req, res) => {
   try {
     const project = await Project.findById(req.params.id);
     if (!project) return res.status(404).json({ message: "Project not found" });
 
-    // Fetch user details for all IDs in the members array
-    const User = (await import("../models/User.js")).default;
     const members = await User.find({ clerkId: { $in: project.members } }).select("firstName lastName email photo clerkId");
 
     res.json(members);

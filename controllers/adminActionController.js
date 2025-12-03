@@ -1,4 +1,5 @@
 import AdminRequest from "../models/AdminRequest.js";
+import User from "../models/User.js"; // Import User model to update MongoDB
 import { createClerkClient } from '@clerk/clerk-sdk-node';
 import dotenv from "dotenv";
 dotenv.config();
@@ -10,7 +11,6 @@ const requestDemotion = async (req, res) => {
   const { targetUserId } = req.body;
   const requesterId = req.auth.userId;
   
-  // 👇 FIX: Check body for orgId fallback
   const orgId = req.auth.orgId || req.body.orgId; 
 
   if (!orgId) return res.status(400).json({ message: "Organization ID required" });
@@ -38,7 +38,7 @@ const requestDemotion = async (req, res) => {
   }
 };
 
-// @desc    Approve a demotion request
+// @desc    Approve a demotion request (Updates Org, Metadata, and MongoDB)
 const approveDemotion = async (req, res) => {
   const { requestId } = req.params;
   const approverId = req.auth.userId;
@@ -51,17 +51,30 @@ const approveDemotion = async (req, res) => {
       return res.status(403).json({ message: "You cannot approve your own request. Another admin is required." });
     }
 
-    // Execute Change in Clerk
+    // 1. Update Organization Membership (Clerk)
     await clerkClient.organizations.updateOrganizationMembership({
       organizationId: request.orgId,
       userId: request.targetUserId,
       role: "org:member"
     });
 
+    // 2. Update User Metadata (Clerk Global Role)
+    await clerkClient.users.updateUserMetadata(request.targetUserId, {
+      publicMetadata: {
+        role: "member"
+      }
+    });
+
+    // 3. Update MongoDB User Role
+    await User.findOneAndUpdate(
+      { clerkId: request.targetUserId },
+      { role: "member" }
+    );
+
     // Clear Request
     await AdminRequest.findByIdAndDelete(requestId);
 
-    res.json({ message: "Demotion approved and executed." });
+    res.json({ message: "Demotion approved and executed successfully." });
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: "Failed to execute demotion." });
@@ -71,10 +84,9 @@ const approveDemotion = async (req, res) => {
 // @desc    Get pending requests
 const getPendingRequests = async (req, res) => {
   try {
-    // 👇 FIX: Check query for orgId fallback
     const orgId = req.auth.orgId || req.query.orgId;
     
-    if (!orgId) return res.json([]); // Return empty if no org context
+    if (!orgId) return res.json([]); 
 
     const requests = await AdminRequest.find({ orgId });
     res.json(requests);
@@ -83,18 +95,32 @@ const getPendingRequests = async (req, res) => {
   }
 };
 
-// @desc    Promote a member to Admin (Immediate)
+// @desc    Promote a member to Admin (Updates Org, Metadata, and MongoDB)
 const promoteMember = async (req, res) => {
   const { targetUserId } = req.body;
-  // Check body for orgId (required for manual requests)
   const orgId = req.auth.orgId || req.body.orgId;
 
   try {
+    // 1. Update Organization Membership (Clerk)
     await clerkClient.organizations.updateOrganizationMembership({
       organizationId: orgId,
       userId: targetUserId,
       role: "org:admin"
     });
+
+    // 2. Update User Metadata (Clerk Global Role)
+    await clerkClient.users.updateUserMetadata(targetUserId, {
+      publicMetadata: {
+        role: "admin"
+      }
+    });
+
+    // 3. Update MongoDB User Role
+    await User.findOneAndUpdate(
+      { clerkId: targetUserId },
+      { role: "admin" }
+    );
+
     res.json({ message: "Member promoted to Admin successfully." });
   } catch (error) {
     console.error(error);

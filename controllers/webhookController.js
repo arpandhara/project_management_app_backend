@@ -1,5 +1,6 @@
 import { Webhook } from "svix";
 import User from "../models/User.js";
+import Project from "../models/Project.js"; // 👈 IMPORT THIS
 
 export const clerkWebhook = async (req, res) => {
   const WEBHOOK_SECRET = process.env.CLERK_WEBHOOK_SECRET;
@@ -13,12 +14,11 @@ export const clerkWebhook = async (req, res) => {
   const svix_timestamp = req.headers["svix-timestamp"];
   const svix_signature = req.headers["svix-signature"];
 
-  // If headers are missing, someone might be attacking your endpoint
   if (!svix_id || !svix_timestamp || !svix_signature) {
     return res.status(400).send("Error occurred -- no svix headers");
   }
 
-  // Use the raw body for verification
+  // Verify Payload
   const payload = req.rawBody;
   const wh = new Webhook(WEBHOOK_SECRET);
   let evt;
@@ -34,64 +34,52 @@ export const clerkWebhook = async (req, res) => {
     return res.status(400).json({ "Error": err.message });
   }
 
-  // Handle the Event
-  const eventType = evt.data.type || evt.type; // Sometimes type is inside data or root
-  const { id, email_addresses, username, first_name, last_name, image_url } = evt.data;
+  // Handle Events
+  const eventType = evt.type;
+  const data = evt.data;
 
   console.log(`Webhook received: ${eventType}`);
 
   if (eventType === "user.created") {
+    // ... (Existing user.created logic)
     try {
-      // SAFEGUARD: Check if email exists to prevent crash
-      const primaryEmail = email_addresses?.[0]?.email_address;
+      const primaryEmail = data.email_addresses?.[0]?.email_address;
+      if (!primaryEmail) return res.status(200).json({ message: "No email found" });
 
-      if (!primaryEmail) {
-        console.log("Skipping user creation: No email found in webhook data.");
-        // Return 200 to tell Clerk "We got it, but we can't use it" (prevents retries)
-        return res.status(200).json({ message: "No email found, skipped DB save" });
-      }
-
-      // Create new user in MongoDB
       const newUser = new User({
-        clerkId: id,
+        clerkId: data.id,
         email: primaryEmail,
-        username: username || id, // Fallback to ID if username is missing
-        firstName: first_name || "",
-        lastName: last_name || "",
-        photo: image_url || "",
+        username: data.username || data.id,
+        firstName: data.first_name || "",
+        lastName: data.last_name || "",
+        photo: data.image_url || "",
         role: "member"
       });
 
       await newUser.save();
-      console.log("✅ User created in DB:", newUser);
-      
+      console.log("✅ User created in DB");
     } catch (error) {
-      // If user already exists (duplicate key error), we consider it a success
-      if (error.code === 11000) {
-         console.log("User already exists in DB, skipping.");
-         return res.status(200).json({ message: "User already exists" });
-      }
+      if (error.code === 11000) return res.status(200).json({ message: "User exists" });
       console.error("❌ Error saving user:", error);
-      return res.status(500).json({ message: "Database error", error: error.message });
+      return res.status(500).json({ message: "Database error" });
     }
   } 
   
   else if (eventType === "user.updated") {
+    // ... (Existing user.updated logic)
     try {
-      const primaryEmail = email_addresses?.[0]?.email_address;
-      
+      const primaryEmail = data.email_addresses?.[0]?.email_address;
       await User.findOneAndUpdate(
-        { clerkId: id },
+        { clerkId: data.id },
         {
-          // Only update email if it exists
           ...(primaryEmail && { email: primaryEmail }),
-          username: username,
-          firstName: first_name,
-          lastName: last_name,
-          photo: image_url,
+          username: data.username,
+          firstName: data.first_name,
+          lastName: data.last_name,
+          photo: data.image_url,
         }
       );
-      console.log("User updated in DB");
+      console.log("✅ User updated in DB");
     } catch (error) {
       console.error("Error updating user:", error);
       return res.status(500).json({ message: "Database error" });
@@ -100,11 +88,36 @@ export const clerkWebhook = async (req, res) => {
   
   else if (eventType === "user.deleted") {
     try {
-      await User.findOneAndDelete({ clerkId: id });
-      console.log("User deleted from DB");
+      await User.findOneAndDelete({ clerkId: data.id });
+      // 👇 NEW: Also remove them from ALL projects if they delete their account
+      await Project.updateMany({}, { $pull: { members: data.id } });
+      console.log("✅ User deleted from DB and Projects");
     } catch (error) {
       console.error("Error deleting user:", error);
       return res.status(500).json({ message: "Database error" });
+    }
+  }
+
+  // 👇 NEW SECTION: Handle Organization Membership Deletion (Kicked/Left)
+  else if (eventType === "organizationMembership.deleted") {
+    try {
+      // Extract IDs. Structure depends on API version, safe check both:
+      const organizationId = data.organization?.id || data.organization_id;
+      const userId = data.public_user_data?.user_id || data.user_id;
+
+      if (organizationId && userId) {
+        // Remove this user from the 'members' array of ALL projects in this Org
+        await Project.updateMany(
+          { orgId: organizationId },
+          { $pull: { members: userId } }
+        );
+        console.log(`✅ Synced: Removed user ${userId} from all projects in Org ${organizationId}`);
+      } else {
+        console.log("⚠️ Skipped project sync: Missing ID in webhook payload");
+      }
+    } catch (error) {
+      console.error("❌ Error syncing project members:", error);
+      return res.status(500).json({ message: "Database error during sync" });
     }
   }
 

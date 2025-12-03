@@ -20,7 +20,7 @@ const requireRole = (allowedRoles) => {
     const effectiveRole = orgRole || personalRole || 'viewer';
 
     // Debugging Log
-    console.log(`🔐 Auth Check | User: ${auth.userId} | Role Found: ${effectiveRole}`);
+    // console.log(`🔐 Auth Check | User: ${auth.userId} | Role Found: ${effectiveRole}`);
 
     if (!allowedRoles.includes(effectiveRole)) {
       return res.status(403).json({ 
