@@ -17,8 +17,8 @@ const projectSchema = mongoose.Schema({
   dueDate: { type: Date },
   
   ownerId: { type: String, required: true },
+  orgId: { type: String }, 
   
-  // 👇 NEW: List of User IDs allowed to see this project
   members: [{ type: String }] 
 }, {
   timestamps: true

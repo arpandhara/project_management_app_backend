@@ -5,16 +5,26 @@ import Project from '../models/Project.js';
 // @access  Public / Viewer
 const getProjects = async (req, res) => {
   try {
-    const currentUserId = req.auth.userId;
+    // Clerk automatically provides userId AND orgId (if an org is selected)
+    const { userId, orgId } = req.auth; 
 
-    // 👇 FILTER: Only find projects where I am the Owner OR I am in the Members list
-    const projects = await Project.find({
-      $or: [
-        { ownerId: currentUserId },
-        { members: currentUserId }
-      ]
-    }).sort({ createdAt: -1 }).lean();
+    let query;
 
+    if (orgId) {
+      // 🏢 ORGANIZATION MODE:
+      // Fetch projects that belong to this specific Organization
+      query = { orgId };
+    } else {
+      // 👤 PERSONAL MODE:
+      // Fetch projects owned by the user that DO NOT belong to an organization
+      // (This prevents Org projects from showing up in Personal workspace)
+      query = { 
+        ownerId: userId, 
+        orgId: { $exists: false } 
+      };
+    }
+
+    const projects = await Project.find(query).sort({ createdAt: -1 }).lean();
     res.json(projects);
   } catch (error) {
     console.error(error);
@@ -50,7 +60,7 @@ const getProjectById = async (req, res) => {
 const createProject = async (req, res) => {
   try {
     const { title, description, status, priority, startDate, dueDate } = req.body;
-    const userId = req.auth.userId;
+    const { userId, orgId } = req.auth;
 
     const project = new Project({
       title,
@@ -60,6 +70,10 @@ const createProject = async (req, res) => {
       startDate,
       dueDate,
       ownerId: userId,
+      
+      // 👇 Save the Org ID if one is active. If not, it saves as undefined (Personal)
+      orgId: orgId || undefined, 
+      
       members: [userId] 
     });
 
