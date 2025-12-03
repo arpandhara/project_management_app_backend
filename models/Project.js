@@ -15,10 +15,13 @@ const projectSchema = mongoose.Schema({
   },
   startDate: { type: Date },
   dueDate: { type: Date },
-  // We will link this to the Clerk User ID later
-  ownerId: { type: String, required: true }, 
+  
+  ownerId: { type: String, required: true },
+  
+  // 👇 NEW: List of User IDs allowed to see this project
+  members: [{ type: String }] 
 }, {
   timestamps: true
 });
 
-export default projectSchema;
+export default mongoose.model('Project', projectSchema);

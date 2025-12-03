@@ -5,8 +5,16 @@ import Project from '../models/Project.js';
 // @access  Public / Viewer
 const getProjects = async (req, res) => {
   try {
-    // .lean() is a Mongoose optimization for faster read-only queries
-    const projects = await Project.find().sort({ createdAt: -1 }).lean();
+    const currentUserId = req.auth.userId;
+
+    // 👇 FILTER: Only find projects where I am the Owner OR I am in the Members list
+    const projects = await Project.find({
+      $or: [
+        { ownerId: currentUserId },
+        { members: currentUserId }
+      ]
+    }).sort({ createdAt: -1 }).lean();
+
     res.json(projects);
   } catch (error) {
     console.error(error);
@@ -42,6 +50,7 @@ const getProjectById = async (req, res) => {
 const createProject = async (req, res) => {
   try {
     const { title, description, status, priority, startDate, dueDate } = req.body;
+    const userId = req.auth.userId;
 
     const project = new Project({
       title,
@@ -50,8 +59,8 @@ const createProject = async (req, res) => {
       priority,
       startDate,
       dueDate,
-      // We attach the Clerk User ID from the auth middleware
-      ownerId: req.auth.userId 
+      ownerId: userId,
+      members: [userId] 
     });
 
     const createdProject = await project.save();
