@@ -6,7 +6,9 @@ import Project from '../models/Project.js';
 const getProjects = async (req, res) => {
   try {
     // Clerk automatically provides userId AND orgId (if an org is selected)
-    const { userId, orgId } = req.auth; 
+    const { userId } = req.auth; 
+
+    const orgId = req.auth.orgId || req.query.orgId;
 
     let query;
 
@@ -60,7 +62,9 @@ const getProjectById = async (req, res) => {
 const createProject = async (req, res) => {
   try {
     const { title, description, status, priority, startDate, dueDate } = req.body;
-    const { userId, orgId } = req.auth;
+    const { userId } = req.auth;
+
+    const orgId = req.auth.orgId || req.body.orgId || req.query.orgId;
 
     const project = new Project({
       title,
