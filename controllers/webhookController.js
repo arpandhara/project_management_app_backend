@@ -1,6 +1,7 @@
 import { Webhook } from "svix";
 import User from "../models/User.js";
-import Project from "../models/Project.js"; // 👈 IMPORT THIS
+import Project from "../models/Project.js"; 
+import Task from "../models/Task.js"
 
 export const clerkWebhook = async (req, res) => {
   const WEBHOOK_SECRET = process.env.CLERK_WEBHOOK_SECRET;
@@ -120,6 +121,33 @@ export const clerkWebhook = async (req, res) => {
       return res.status(500).json({ message: "Database error during sync" });
     }
   }
+  else if (eventType === "organization.deleted") {
+    try {
+      const orgId = data.id;
 
+      if (!orgId) {
+        console.log("⚠️ Skipped org deletion: Missing ID");
+        return res.status(200).json({ message: "Missing ID" });
+      }
+
+      // 1. Find all projects to get their IDs
+      const projects = await Project.find({ orgId });
+      const projectIds = projects.map(p => p._id);
+
+      // 2. Delete all Tasks associated with these projects
+      if (projectIds.length > 0) {
+        const taskResult = await Task.deleteMany({ projectId: { $in: projectIds } });
+        console.log(`🗑️ Deleted ${taskResult.deletedCount} tasks.`);
+      }
+
+      // 3. Delete the Projects
+      const projectResult = await Project.deleteMany({ orgId });
+      console.log(`✅ Organization Deleted: Removed ${projectResult.deletedCount} projects for Org ${orgId}`);
+
+    } catch (error) {
+      console.error("❌ Error syncing organization deletion:", error);
+      return res.status(500).json({ message: "Database error" });
+    }
+  }
   return res.status(200).json({ success: true, message: "Webhook received" });
 };

@@ -7,6 +7,7 @@ import {
   promoteMember,
   requestOrgDeletion,
   approveOrgDeletion,
+  rejectRequest,
 } from "../controllers/adminActionController.js";
 
 const router = express.Router();
@@ -44,5 +45,10 @@ router.post(
   requireRole(ALLOWED_ROLES),
   approveOrgDeletion
 );
-
+router.post(
+  "/reject/:requestId",
+  requireAuth,
+  requireRole(ALLOWED_ROLES),
+  rejectRequest
+);
 export default router;

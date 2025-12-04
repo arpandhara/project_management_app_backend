@@ -2,6 +2,8 @@ import AdminRequest from "../models/AdminRequest.js";
 import User from "../models/User.js"; // Import User model to update MongoDB
 import { createClerkClient } from '@clerk/clerk-sdk-node';
 import dotenv from "dotenv";
+import Project from "../models/Project.js";
+import Task from "../models/Task.js";
 dotenv.config();
 
 const clerkClient = createClerkClient({ secretKey: process.env.CLERK_SECRET_KEY });
@@ -88,9 +90,28 @@ const getPendingRequests = async (req, res) => {
     
     if (!orgId) return res.json([]); 
 
-    const requests = await AdminRequest.find({ orgId });
-    res.json(requests);
+    // 1. Fetch requests
+    const requests = await AdminRequest.find({ orgId }).lean(); // .lean() converts to plain JS object so we can add properties
+
+    // 2. Populate User Details (Requester & Target)
+    const enhancedRequests = await Promise.all(requests.map(async (request) => {
+      const requester = await User.findOne({ clerkId: request.requesterUserId }).select("firstName lastName");
+      
+      let target = null;
+      if (request.targetUserId) {
+        target = await User.findOne({ clerkId: request.targetUserId }).select("firstName lastName");
+      }
+
+      return {
+        ...request,
+        requesterName: requester ? `${requester.firstName} ${requester.lastName}` : "Unknown Admin",
+        targetName: target ? `${target.firstName} ${target.lastName}` : request.targetUserId
+      };
+    }));
+
+    res.json(enhancedRequests);
   } catch (error) {
+    console.error("Error fetching requests:", error);
     res.status(500).json({ message: "Server Error" });
   }
 };
@@ -179,21 +200,42 @@ const approveOrgDeletion = async (req, res) => {
     await clerkClient.organizations.deleteOrganization(orgId);
 
     // 2. Clean up Local DB (Projects & Tasks)
-    // Find all projects in this org to delete their tasks first
+    // Find all projects in this org first
     const projects = await Project.find({ orgId });
     const projectIds = projects.map(p => p._id);
 
-    await Task.deleteMany({ projectId: { $in: projectIds } });
+    // Delete tasks associated with these projects
+    if (projectIds.length > 0) {
+        await Task.deleteMany({ projectId: { $in: projectIds } });
+    }
+    
+    // Delete the projects themselves
     await Project.deleteMany({ orgId });
 
-    // 3. Delete All Pending Requests for this Org
+    // 3. Delete All Pending Requests for this Org (cleanup)
     await AdminRequest.deleteMany({ orgId });
 
     res.json({ message: "Organization deleted successfully." });
   } catch (error) {
-    console.error(error);
+    console.error("Org Deletion Error:", error);
     res.status(500).json({ message: "Failed to delete organization." });
   }
 };
 
-export { requestDemotion, approveDemotion, getPendingRequests , promoteMember , requestOrgDeletion , approveOrgDeletion };
+const rejectRequest = async (req, res) => {
+  const { requestId } = req.params;
+  try {
+    const request = await AdminRequest.findById(requestId);
+    if (!request) return res.status(404).json({ message: "Request not found" });
+
+    // Deleting the request effectively denies it
+    await AdminRequest.findByIdAndDelete(requestId);
+
+    res.json({ message: "Request denied and removed." });
+  } catch (error) {
+    console.error("Reject Error:", error);
+    res.status(500).json({ message: "Failed to reject request." });
+  }
+};
+
+export { requestDemotion, approveDemotion, getPendingRequests , promoteMember , requestOrgDeletion , approveOrgDeletion , rejectRequest };
