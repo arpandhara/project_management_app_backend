@@ -1,7 +1,14 @@
 import { Webhook } from "svix";
 import User from "../models/User.js";
-import Project from "../models/Project.js"; 
-import Task from "../models/Task.js"
+import Project from "../models/Project.js";
+import Task from "../models/Task.js";
+import { createClerkClient } from '@clerk/clerk-sdk-node';
+import dotenv from "dotenv";
+
+dotenv.config();
+
+// Initialize Clerk to update Metadata
+const clerkClient = createClerkClient({ secretKey: process.env.CLERK_SECRET_KEY });
 
 export const clerkWebhook = async (req, res) => {
   const WEBHOOK_SECRET = process.env.CLERK_WEBHOOK_SECRET;
@@ -41,8 +48,10 @@ export const clerkWebhook = async (req, res) => {
 
   console.log(`Webhook received: ${eventType}`);
 
+  // ------------------------------------------------------------------
+  // 1. USER EVENTS (Create/Update/Delete Users)
+  // ------------------------------------------------------------------
   if (eventType === "user.created") {
-    // ... (Existing user.created logic)
     try {
       const primaryEmail = data.email_addresses?.[0]?.email_address;
       if (!primaryEmail) return res.status(200).json({ message: "No email found" });
@@ -54,7 +63,7 @@ export const clerkWebhook = async (req, res) => {
         firstName: data.first_name || "",
         lastName: data.last_name || "",
         photo: data.image_url || "",
-        role: "member"
+        role: "member" // Default to member
       });
 
       await newUser.save();
@@ -67,7 +76,6 @@ export const clerkWebhook = async (req, res) => {
   } 
   
   else if (eventType === "user.updated") {
-    // ... (Existing user.updated logic)
     try {
       const primaryEmail = data.email_addresses?.[0]?.email_address;
       await User.findOneAndUpdate(
@@ -90,7 +98,6 @@ export const clerkWebhook = async (req, res) => {
   else if (eventType === "user.deleted") {
     try {
       await User.findOneAndDelete({ clerkId: data.id });
-      // 👇 NEW: Also remove them from ALL projects if they delete their account
       await Project.updateMany({}, { $pull: { members: data.id } });
       console.log("✅ User deleted from DB and Projects");
     } catch (error) {
@@ -99,55 +106,95 @@ export const clerkWebhook = async (req, res) => {
     }
   }
 
-  // 👇 NEW SECTION: Handle Organization Membership Deletion (Kicked/Left)
+  // ------------------------------------------------------------------
+  // 2. MEMBERSHIP SYNC (Fixes the Bug: Role Persistence)
+  // ------------------------------------------------------------------
+  
+  // CASE A: User Joins or Role Changes (Sync exact role)
+  else if (eventType === "organizationMembership.created" || eventType === "organizationMembership.updated") {
+    try {
+      const userId = data.public_user_data?.user_id;
+      const orgRole = data.role; // e.g., "org:admin" or "org:member"
+      
+      // Determine Global Role based on Org Role
+      const newGlobalRole = (orgRole === "org:admin") ? "admin" : "member";
+
+      if (userId) {
+        // 1. Update MongoDB
+        await User.findOneAndUpdate({ clerkId: userId }, { role: newGlobalRole });
+
+        // 2. Update Clerk Metadata (So frontend UI updates immediately)
+        await clerkClient.users.updateUserMetadata(userId, {
+          publicMetadata: { role: newGlobalRole }
+        });
+
+        console.log(`🔄 Role Synced for ${userId}: Now ${newGlobalRole}`);
+      }
+    } catch (error) {
+      console.error("❌ Error syncing membership role:", error);
+      return res.status(500).json({ message: "Sync error" });
+    }
+  }
+
+  // CASE B: User Left / Removed / Kicked (Downgrade to Member)
   else if (eventType === "organizationMembership.deleted") {
     try {
-      // Extract IDs. Structure depends on API version, safe check both:
       const organizationId = data.organization?.id || data.organization_id;
       const userId = data.public_user_data?.user_id || data.user_id;
 
-      if (organizationId && userId) {
-        // Remove this user from the 'members' array of ALL projects in this Org
-        await Project.updateMany(
-          { orgId: organizationId },
-          { $pull: { members: userId } }
-        );
-        console.log(`✅ Synced: Removed user ${userId} from all projects in Org ${organizationId}`);
-      } else {
-        console.log("⚠️ Skipped project sync: Missing ID in webhook payload");
+      if (userId) {
+        // 1. Remove from Projects (Existing Logic)
+        if (organizationId) {
+          await Project.updateMany(
+            { orgId: organizationId },
+            { $pull: { members: userId } }
+          );
+        }
+
+        // 2. 👇 NEW: Downgrade User to 'member' globally
+        // This ensures if they are kicked, they lose Admin status immediately.
+        await User.findOneAndUpdate({ clerkId: userId }, { role: "member" });
+        
+        await clerkClient.users.updateUserMetadata(userId, {
+          publicMetadata: { role: "member" }
+        });
+
+        console.log(`🔻 User ${userId} removed from Org. Downgraded to Member.`);
       }
     } catch (error) {
-      console.error("❌ Error syncing project members:", error);
-      return res.status(500).json({ message: "Database error during sync" });
+      console.error("❌ Error processing membership deletion:", error);
+      return res.status(500).json({ message: "Database error" });
     }
   }
+
+  // ------------------------------------------------------------------
+  // 3. ORGANIZATION EVENTS (Cleanup)
+  // ------------------------------------------------------------------
   else if (eventType === "organization.deleted") {
     try {
       const orgId = data.id;
+      if (!orgId) return res.status(200).json({ message: "Missing ID" });
 
-      if (!orgId) {
-        console.log("⚠️ Skipped org deletion: Missing ID");
-        return res.status(200).json({ message: "Missing ID" });
-      }
-
-      // 1. Find all projects to get their IDs
+      // Clean up Projects & Tasks
       const projects = await Project.find({ orgId });
       const projectIds = projects.map(p => p._id);
 
-      // 2. Delete all Tasks associated with these projects
       if (projectIds.length > 0) {
-        const taskResult = await Task.deleteMany({ projectId: { $in: projectIds } });
-        console.log(`🗑️ Deleted ${taskResult.deletedCount} tasks.`);
+        await Task.deleteMany({ projectId: { $in: projectIds } });
       }
-
-      // 3. Delete the Projects
       const projectResult = await Project.deleteMany({ orgId });
-      console.log(`✅ Organization Deleted: Removed ${projectResult.deletedCount} projects for Org ${orgId}`);
+
+      console.log(`✅ Organization Deleted: Cleaned up ${projectResult.deletedCount} projects.`);
+      
+      // Note: We don't need to downgrade users here explicitly because 
+      // Clerk usually fires 'organizationMembership.deleted' for members 
+      // when the org is destroyed, which will trigger the logic above.
 
     } catch (error) {
       console.error("❌ Error syncing organization deletion:", error);
       return res.status(500).json({ message: "Database error" });
     }
   }
+
   return res.status(200).json({ success: true, message: "Webhook received" });
 };
