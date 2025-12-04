@@ -1,16 +1,11 @@
 import mongoose from "mongoose";
 
 const taskSchema = new mongoose.Schema({
-  title: { 
-    type: String, 
-    required: true 
-  },
-  description: { 
-    type: String 
-  },
+  title: { type: String, required: true },
+  description: { type: String },
   status: { 
     type: String, 
-    enum: ['To Do', 'In Progress', 'Done'], // Matches your frontend options
+    enum: ['To Do', 'In Progress', 'Done'], 
     default: 'To Do' 
   },
   priority: {
@@ -20,24 +15,19 @@ const taskSchema = new mongoose.Schema({
   },
   type: {
     type: String,
-    enum: ['TASK', 'BUG', 'FEATURE', 'IMPROVEMENT'], // Matches your frontend
+    enum: ['TASK', 'BUG', 'IMPROVEMENT', 'DESIGN', 'CONTENT_WRITING', 'SOCIAL_MEDIA', 'OTHER'], 
     default: 'TASK'
   },
-  dueDate: { 
-    type: Date 
-  },
+  dueDate: { type: Date },
+  projectId: { type: mongoose.Schema.Types.ObjectId, ref: 'Project', required: true },
+  assignees: [{ type: String }],
   
-  // Link to the Project this task belongs to
-  projectId: { 
-    type: mongoose.Schema.Types.ObjectId, 
-    ref: 'Project', 
-    required: true 
-  },
-  
-  // Link to the User assigned (Clerk User ID string)
-  assigneeId: { 
-    type: String 
-  } 
+
+  attachments: [{
+    type: { type: String, enum: ['DOC', 'GITHUB', 'LINK'], default: 'LINK' },
+    name: { type: String, required: true },
+    url: { type: String, required: true }
+  }]
 }, {
   timestamps: true
 });

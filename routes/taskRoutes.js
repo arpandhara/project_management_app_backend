@@ -6,6 +6,8 @@ import {
   createTask,
   deleteTask,
   getUserTasks,
+  getTaskById,
+  updateTask
 } from "../controllers/taskController.js";
 import { requireAuth, requireRole } from "../middleware/authMiddleware.js";
 
@@ -25,4 +27,6 @@ router.post(
 router.delete("/:id", requireAuth, requireRole(["admin"]), deleteTask);
 router.get("/user/:userId", requireAuth, getUserTasks);
 
+router.get("/:id", requireAuth, getTaskById);
+router.put("/:id", requireAuth, updateTask);
 export default router;
