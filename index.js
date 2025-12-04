@@ -13,6 +13,7 @@ import webhookRoutes from "./routes/webhookRoutes.js";
 import taskRoutes from "./routes/taskRoutes.js"; // Import Tasks
 import userRoutes from "./routes/userRoutes.js";
 import adminActionRoutes from "./routes/adminActionRoutes.js";
+import notificationRoutes from "./routes/notificationRoutes.js";
 
 await connectDB();
 
@@ -42,6 +43,7 @@ app.use("/api/tasks", taskRoutes); // Mount Tasks
 app.use("/api/webhooks", webhookRoutes);
 app.use("/api/users", userRoutes);
 app.use('/api/admin-actions', adminActionRoutes);
+app.use("/api/notifications", notificationRoutes);
 
 app.get("/", (req, res) => {
   res.send("API is running...");

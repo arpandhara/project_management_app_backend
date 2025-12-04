@@ -1,6 +1,8 @@
 import Project from '../models/Project.js';
-import { createClerkClient } from '@clerk/clerk-sdk-node';
 import User from "../models/User.js"; // Import User at the top
+import Notification from "../models/Notification.js";
+import { createClerkClient } from '@clerk/clerk-sdk-node';
+
 
 // @desc    Get all projects
 const getProjects = async (req, res) => {
@@ -107,38 +109,42 @@ const addProjectMember = async (req, res) => {
       return res.status(404).json({ message: "User not found in the system. They must sign up first." });
     }
 
-    // 2. Check if User is a Member of the Organization
+    // 2. Organization Check (from previous step)
     if (project.orgId) {
       const clerkClient = createClerkClient({ secretKey: process.env.CLERK_SECRET_KEY });
-
-      // console.log(`🔍 Checking Membership | Org: ${project.orgId} | User: ${userToAdd.clerkId}`);
-
       try {
         const response = await clerkClient.organizations.getOrganizationMembershipList({
           organizationId: project.orgId,
-          userId: [userToAdd.clerkId],
+          userId: userToAdd.clerkId, 
         });
-
         const memberships = Array.isArray(response) ? response : response.data;
-
-        if (!memberships || memberships.length === 0) {
-          throw new Error("User is not a member of this organization");
-        }
-
-        // console.log("✅ User is in Core Team");
-      } catch (error) {
-        // console.error("❌ Membership Check Failed:", error.message);
-        
-        return res.status(400).json({ 
-          message: "User is not in the Organization's Core Team. Please invite them to the Team first." 
+        const isActuallyMember = memberships && memberships.some(mem => {
+           const memId = mem.publicUserData?.userId || mem.public_user_data?.user_id;
+           return memId === userToAdd.clerkId;
         });
+
+        if (!memberships || memberships.length === 0 || !isActuallyMember) {
+          return res.status(400).json({ 
+            message: "User is not in the Organization's Core Team. Please invite them to the Team first." 
+          });
+        }
+      } catch (error) {
+        return res.status(400).json({ message: "Could not verify organization membership." });
       }
     }
 
-    // 3. Add to project members if passed checks
+    // 3. Add to project members
     if (!project.members.includes(userToAdd.clerkId)) {
       project.members.push(userToAdd.clerkId);
       await project.save();
+
+      // ---> 4. NEW: SEND NOTIFICATION
+      await Notification.create({
+        userId: userToAdd.clerkId,
+        message: `You have been added to the project: "${project.title}"`,
+        type: 'PROJECT_ADD',
+        projectId: project._id
+      });
     }
 
     res.json({ message: "Member added", member: userToAdd });
