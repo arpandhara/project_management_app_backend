@@ -109,12 +109,19 @@ const deleteTask = async (req, res) => {
     const task = await Task.findById(req.params.id);
     if (task) {
       const projectId = task.projectId;
+      const assignees = task.assignees; // Save assignees before delete
+
       await task.deleteOne();
 
-      // ⚡ SOCKET: Update Project Board
       const io = req.app.get("io");
       if (io) {
+        // 1. Existing: Update Project Board
         io.to(`project_${projectId}`).emit("task:deleted", req.params.id);
+
+        // 2. ⭐ NEW: Notify Assignees (Updates Dashboard)
+        assignees.forEach((userId) => {
+          io.to(`user_${userId}`).emit("dashboard:update");
+        });
       }
 
       res.json({ message: "Task removed" });
@@ -171,6 +178,17 @@ const updateTask = async (req, res) => {
   try {
     const { id } = req.params;
     const updates = req.body;
+
+    if (updates.dueDate) {
+      const newDueDate = new Date(updates.dueDate);
+      const today = new Date();
+      today.setHours(0, 0, 0, 0); // Start of today
+      
+      if (newDueDate < today) {
+        return res.status(400).json({ message: "Due date cannot be in the past" });
+      }
+    }
+
     const userId = req.auth.userId;
     const isOrgAdmin = req.auth.orgRole === "org:admin";
     const isGlobalAdmin = req.auth.sessionClaims?.publicMetadata?.role === "admin";
@@ -198,6 +216,10 @@ const updateTask = async (req, res) => {
     const io = req.app.get("io");
     if (io) {
       io.to(`project_${task.projectId}`).emit("task:updated", task);
+
+      task.assignees.forEach((userId) => {
+        io.to(`user_${userId}`).emit("dashboard:update");
+      });
     }
 
     res.json(task);

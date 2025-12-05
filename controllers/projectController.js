@@ -1,5 +1,6 @@
 import Project from '../models/Project.js';
-import User from "../models/User.js"; // Import User at the top
+import User from "../models/User.js"; 
+import Task from "../models/Task.js";
 import Notification from "../models/Notification.js";
 import { createClerkClient } from '@clerk/clerk-sdk-node';
 
@@ -79,8 +80,21 @@ const deleteProject = async (req, res) => {
   try {
     const project = await Project.findById(req.params.id);
     if (project) {
+      const orgId = project.orgId;
+
+      // 2. DELETE ALL TASKS associated with this project
+      await Task.deleteMany({ projectId: project._id });
+
+      // 3. Delete the project itself
       await project.deleteOne();
-      res.json({ message: 'Project removed' });
+
+      // 4. Socket Broadcast (Keep UI in sync)
+      const io = req.app.get("io");
+      if (io && orgId) {
+        io.to(`org_${orgId}`).emit("project:deleted", req.params.id);
+      }
+
+      res.json({ message: 'Project and all associated tasks removed' });
     } else {
       res.status(404).json({ message: 'Project not found' });
     }

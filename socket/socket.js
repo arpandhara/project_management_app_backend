@@ -6,8 +6,7 @@ const initializeSocket = (httpServer) => {
   io = new Server(httpServer, {
     pingTimeout: 60000,
     cors: {
-      // Allow any origin for dev (simplifies localhost vs 127.0.0.1 issues)
-      origin: true, 
+      origin: true, // Allow dev connections
       methods: ["GET", "POST"],
       credentials: true,
     },
@@ -16,26 +15,32 @@ const initializeSocket = (httpServer) => {
   io.on("connection", (socket) => {
     console.log("🔌 Connected to socket:", socket.id);
 
+    // 1. User Room
     socket.on("setup", (userData) => {
       if (userData?.userId) {
         socket.join(`user_${userData.userId}`);
         socket.emit("connected");
-        console.log(`👤 User joined room: user_${userData.userId}`);
       }
     });
 
+    // 2. Project Room
     socket.on("join_project", (room) => {
       socket.join(room);
-      console.log(`Ps User joined project room: ${room}`);
+    });
+
+    // 3. ⭐ NEW: Organization Room (For project lists/team updates)
+    socket.on("join_org", (orgId) => {
+      if (orgId) {
+        socket.join(`org_${orgId}`);
+        console.log(`Joined Org Room: org_${orgId}`);
+      }
     });
 
     socket.on("leave_project", (room) => {
       socket.leave(room);
     });
 
-    socket.on("disconnect", () => {
-      // console.log("USER DISCONNECTED", socket.id);
-    });
+    socket.on("disconnect", () => {});
   });
 
   return io;
