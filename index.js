@@ -17,6 +17,7 @@ import taskRoutes from "./routes/taskRoutes.js";
 import userRoutes from "./routes/userRoutes.js";
 import adminActionRoutes from "./routes/adminActionRoutes.js";
 import notificationRoutes from "./routes/notificationRoutes.js";
+import { deleteExpiredTasks } from "./controllers/taskController.js";
 
 await connectDB();
 
@@ -49,6 +50,12 @@ const limiter = rateLimit({
   max: 5000,
 });
 app.use(limiter);
+
+const TWENTY_FOUR_HOURS = 24 * 60 * 60 * 1000;
+setInterval(() => {
+  console.log("⏰ Running task cleanup...");
+  deleteExpiredTasks(io);
+}, TWENTY_FOUR_HOURS);
 
 // Routes
 app.use("/api/projects", projectRoutes);

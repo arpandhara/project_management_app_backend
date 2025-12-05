@@ -22,11 +22,20 @@ const taskSchema = new mongoose.Schema({
   projectId: { type: mongoose.Schema.Types.ObjectId, ref: 'Project', required: true },
   assignees: [{ type: String }],
   
-
   attachments: [{
     type: { type: String, enum: ['DOC', 'GITHUB', 'LINK'], default: 'LINK' },
     name: { type: String, required: true },
     url: { type: String, required: true }
+  }],
+
+  isApproved: { type: Boolean, default: false },
+  approvedAt: { type: Date },
+  comments: [{
+    userId: { type: String },
+    userName: { type: String }, 
+    text: { type: String, required: true },
+    type: { type: String, enum: ['COMMENT', 'APPROVAL', 'REJECTION'], default: 'COMMENT' },
+    createdAt: { type: Date, default: Date.now }
   }]
 }, {
   timestamps: true

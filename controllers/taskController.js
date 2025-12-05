@@ -2,6 +2,7 @@ import Task from "../models/Task.js";
 import Notification from "../models/Notification.js";
 import User from "../models/User.js";
 import nodemailer from "nodemailer";
+import Project from "../models/Project.js";
 
 // @desc    Get tasks for a specific project
 const getTasks = async (req, res) => {
@@ -20,86 +21,91 @@ const createTask = async (req, res) => {
     const task = new Task(req.body);
     const createdTask = await task.save();
 
-    // ⚡ SOCKET: Broadcast to Project Room
+    // ⚡ SOCKET: Broadcast to Project Room (Fast enough to keep here)
     const io = req.app.get("io");
     if (io) {
       io.to(`project_${createdTask.projectId}`).emit("task:created", createdTask);
-      console.log(`📡 Emitted task:created to project_${createdTask.projectId}`);
-    }
-
-    // 3. Handle Notifications & Emails
-    if (createdTask.assignees && createdTask.assignees.length > 0) {
-      const assigneesToNotify = createdTask.assignees.filter(
-        (id) => id !== req.auth.userId
-      );
-
-      if (assigneesToNotify.length > 0) {
-        // A. In-App Notifications
-        const notifications = assigneesToNotify.map((userId) => ({
-          userId,
-          message: `You have been assigned to task: "${createdTask.title}"`,
-          type: "TASK_ASSIGN",
-          projectId: createdTask.projectId,
-        }));
-        
-        // Save to DB
-        const savedNotifications = await Notification.insertMany(notifications);
-
-        // ⚡ SOCKET: Notify specific users
-        if (io) {
-          savedNotifications.forEach((note) => {
-            io.to(`user_${note.userId}`).emit("notification:new", note);
-            console.log(`🔔 Notification sent to user_${note.userId}`);
-          });
-        }
-
-        // B. Send Emails (Keep existing logic)
-        try {
-          const usersToEmail = await User.find({
-            clerkId: { $in: assigneesToNotify },
-          });
-
-          const transporter = nodemailer.createTransport({
-            service: "gmail",
-            auth: {
-              user: process.env.EMAIL_USER,
-              pass: process.env.EMAIL_PASS,
-            },
-          });
-
-          await Promise.all(
-            usersToEmail.map((user) => {
-              if (!user.email) return;
-              const mailOptions = {
-                from: `"Project Manager" <${process.env.EMAIL_USER}>`,
-                to: user.email,
-                subject: `New Task Assigned: ${createdTask.title}`,
-                html: `
-                  <div style="font-family: Arial, sans-serif; color: #333;">
-                    <h2>New Task Assignment</h2>
-                    <p>Hi <strong>${user.firstName || "Member"}</strong>,</p>
-                    <p>You have been assigned to a new task:</p>
-                    <blockquote style="border-left: 4px solid #2563eb; padding-left: 10px; margin: 20px 0;">
-                      <p><strong>Title:</strong> ${createdTask.title}</p>
-                      <p><strong>Priority:</strong> ${createdTask.priority}</p>
-                    </blockquote>
-                    <p>Best regards,<br/>The Team</p>
-                  </div>
-                `,
-              };
-              return transporter.sendMail(mailOptions);
-            })
-          );
-        } catch (emailErr) {
-          console.error("❌ Failed to send emails:", emailErr);
-        }
-      }
     }
 
     res.status(201).json(createdTask);
+
+    // This runs asynchronously after the response is sent
+    (async () => {
+      try {
+        if (createdTask.assignees && createdTask.assignees.length > 0) {
+          const assigneesToNotify = createdTask.assignees.filter(
+            (id) => id !== req.auth.userId
+          );
+
+          if (assigneesToNotify.length > 0) {
+            // A. In-App Notifications (DB Write)
+            const notifications = assigneesToNotify.map((userId) => ({
+              userId,
+              message: `You have been assigned to task: "${createdTask.title}"`,
+              type: "TASK_ASSIGN",
+              projectId: createdTask.projectId,
+            }));
+
+            const savedNotifications = await Notification.insertMany(notifications);
+
+            // ⚡ SOCKET: Notify specific users
+            if (io) {
+              savedNotifications.forEach((note) => {
+                io.to(`user_${note.userId}`).emit("notification:new", note);
+              });
+            }
+
+            // B. Send Emails (The Heavy Operation)
+            const usersToEmail = await User.find({
+              clerkId: { $in: assigneesToNotify },
+            });
+
+            const transporter = nodemailer.createTransport({
+              service: "gmail",
+              auth: {
+                user: process.env.EMAIL_USER,
+                pass: process.env.EMAIL_PASS,
+              },
+            });
+
+            // We await here, but it only blocks this background function, not the user response
+            await Promise.all(
+              usersToEmail.map((user) => {
+                if (!user.email) return;
+                const mailOptions = {
+                  from: `"Project Manager" <${process.env.EMAIL_USER}>`,
+                  to: user.email,
+                  subject: `New Task Assigned: ${createdTask.title}`,
+                  html: `
+                    <div style="font-family: Arial, sans-serif; color: #333;">
+                      <h2>New Task Assignment</h2>
+                      <p>Hi <strong>${user.firstName || "Member"}</strong>,</p>
+                      <p>You have been assigned to a new task:</p>
+                      <blockquote style="border-left: 4px solid #2563eb; padding-left: 10px; margin: 20px 0;">
+                        <p><strong>Title:</strong> ${createdTask.title}</p>
+                        <p><strong>Priority:</strong> ${createdTask.priority}</p>
+                      </blockquote>
+                      <p>Best regards,<br/>The Team</p>
+                    </div>
+                  `,
+                };
+                return transporter.sendMail(mailOptions);
+              })
+            );
+          }
+        }
+      } catch (backgroundError) {
+        // Just log errors here, don't crash the server
+        console.error("⚠️ Background Notification Error:", backgroundError);
+      }
+    })();
+
   } catch (error) {
     console.error("Create Task Error:", error);
-    res.status(400).json({ message: "Invalid task data" });
+    // Only send error if we haven't responded yet
+    if (!res.headersSent) {
+      res.status(400).json({ message: "Invalid task data" });
+    }
   }
 };
 
@@ -178,48 +184,42 @@ const updateTask = async (req, res) => {
   try {
     const { id } = req.params;
     const updates = req.body;
-
-    if (updates.dueDate) {
-      const newDueDate = new Date(updates.dueDate);
-      const today = new Date();
-      today.setHours(0, 0, 0, 0); // Start of today
-      
-      if (newDueDate < today) {
-        return res.status(400).json({ message: "Due date cannot be in the past" });
-      }
-    }
-
     const userId = req.auth.userId;
-    const isOrgAdmin = req.auth.orgRole === "org:admin";
-    const isGlobalAdmin = req.auth.sessionClaims?.publicMetadata?.role === "admin";
-    const isAdmin = isOrgAdmin || isGlobalAdmin;
 
     const task = await Task.findById(id);
     if (!task) return res.status(404).json({ message: "Task not found" });
 
-    const isAssignee = task.assignees.includes(userId);
-
-    if (!isAdmin && !isAssignee) {
-      return res.status(403).json({ message: "Access Denied" });
-    }
-
-    if (isAdmin) {
-      Object.assign(task, updates);
-    } else if (isAssignee) {
-      if (updates.status) task.status = updates.status;
-      if (updates.attachments) task.attachments = updates.attachments;
-    }
-
+    // Apply updates
+    Object.assign(task, updates);
     await task.save();
 
-    // ⚡ SOCKET: Real-time update
     const io = req.app.get("io");
+
+    // ⚡ SOCKET: Real-time update
     if (io) {
       io.to(`project_${task.projectId}`).emit("task:updated", task);
+    }
 
-      task.assignees.forEach((userId) => {
-        io.to(`user_${userId}`).emit("dashboard:update");
-      });
+    // ⭐ NEW: Notify Admin if marked DONE
+    if (updates.status === "Done") {
+      const project = await Project.findById(task.projectId);
+      if (project) {
+        // Find Admin (Owner or Org Admins) - For MVP assuming Owner
+        const adminId = project.ownerId; 
+        
+        // Don't notify if the admin themselves marked it done
+        if (userId !== adminId) {
+          const note = await Notification.create({
+            userId: adminId,
+            message: `Task "${task.title}" was marked as DONE. Please review for approval.`,
+            type: "INFO",
+            projectId: task.projectId,
+            metadata: { taskId: task._id }
+          });
+          
+          if (io) io.to(`user_${adminId}`).emit("notification:new", note);
+        }
+      }
     }
 
     res.json(task);
@@ -331,6 +331,141 @@ const respondToTaskInvite = async (req, res) => {
   }
 };
 
+const approveTask = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { comment, adminName } = req.body; // Pass admin name from frontend or fetch user
+
+    const task = await Task.findById(id);
+    if (!task) return res.status(404).json({ message: "Task not found" });
+
+    task.isApproved = true;
+    task.approvedAt = new Date();
+    
+    // Add Approval Comment
+    task.comments.push({
+      userId: req.auth.userId,
+      userName: adminName || "Admin",
+      text: comment || "Task Approved. Scheduled for deletion in 15 days.",
+      type: "APPROVAL"
+    });
+
+    await task.save();
+
+    // ⚡ Socket Update
+    const io = req.app.get("io");
+    if (io) io.to(`project_${task.projectId}`).emit("task:updated", task);
+
+    // Notify Assignees
+    const notifications = task.assignees.map(uid => ({
+      userId: uid,
+      message: `Task "${task.title}" APPROVED. It will be auto-deleted in 15 days.`,
+      type: "INFO",
+      projectId: task.projectId
+    }));
+    
+    if (notifications.length > 0) {
+      const savedNotes = await Notification.insertMany(notifications);
+      if (io) {
+        savedNotes.forEach(note => io.to(`user_${note.userId}`).emit("notification:new", note));
+      }
+    }
+
+    res.json(task);
+  } catch (error) {
+    res.status(500).json({ message: "Failed to approve task" });
+  }
+};
+
+// ⭐ NEW: Disapprove Task
+const disapproveTask = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { comment, adminName } = req.body;
+
+    const task = await Task.findById(id);
+    if (!task) return res.status(404).json({ message: "Task not found" });
+
+    // Logic: Unapprove and move back to In Progress
+    task.isApproved = false;
+    task.approvedAt = null;
+    task.status = "In Progress";
+
+    // Add Rejection Comment
+    task.comments.push({
+      userId: req.auth.userId,
+      userName: adminName || "Admin",
+      text: comment || "Task Disapproved.",
+      type: "REJECTION"
+    });
+
+    await task.save();
+
+    const io = req.app.get("io");
+    if (io) io.to(`project_${task.projectId}`).emit("task:updated", task);
+
+    // Notify Assignees
+    const notifications = task.assignees.map(uid => ({
+      userId: uid,
+      message: `Task "${task.title}" DISAPPROVED. Please check comments.`,
+      type: "INFO",
+      projectId: task.projectId
+    }));
+
+    if (notifications.length > 0) {
+      const savedNotes = await Notification.insertMany(notifications);
+      if (io) {
+        savedNotes.forEach(note => io.to(`user_${note.userId}`).emit("notification:new", note));
+      }
+    }
+
+    res.json(task);
+  } catch (error) {
+    res.status(500).json({ message: "Failed to disapprove task" });
+  }
+};
+
+// ⭐ NEW: Cron Job Logic (Call this from index.js)
+const deleteExpiredTasks = async (io) => {
+  try {
+    const fifteenDaysAgo = new Date();
+    fifteenDaysAgo.setDate(fifteenDaysAgo.getDate() - 15);
+
+    const tasksToDelete = await Task.find({
+      isApproved: true,
+      approvedAt: { $lte: fifteenDaysAgo }
+    });
+
+    if (tasksToDelete.length === 0) return;
+
+    // Group by project to find admins (Simplified: Assuming one global admin or project owner for notification)
+    for (const task of tasksToDelete) {
+        const project = await Project.findById(task.projectId);
+        
+        // Notify Admin
+        if (project && project.ownerId) {
+             const note = await Notification.create({
+                userId: project.ownerId,
+                message: `Task "${task.title}" was auto-deleted (15 days post-approval).`,
+                type: "INFO",
+                projectId: task.projectId
+             });
+             if(io) io.to(`user_${project.ownerId}`).emit("notification:new", note);
+        }
+
+        // Notify Room (to remove from UI)
+        if(io) io.to(`project_${task.projectId}`).emit("task:deleted", task._id);
+        
+        await task.deleteOne();
+    }
+    
+    console.log(`🧹 Auto-deleted ${tasksToDelete.length} approved tasks.`);
+
+  } catch (error) {
+    console.error("Auto-delete error:", error);
+  }
+};
+
 export {
   getTasks,
   createTask,
@@ -340,4 +475,7 @@ export {
   updateTask,
   inviteToTask,
   respondToTaskInvite,
+  approveTask,
+  disapproveTask,
+  deleteExpiredTasks
 };
