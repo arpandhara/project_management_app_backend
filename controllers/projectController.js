@@ -102,14 +102,13 @@ const addProjectMember = async (req, res) => {
     
     if (!project) return res.status(404).json({ message: "Project not found" });
 
-    // 1. Find the user in local DB
     const userToAdd = await User.findOne({ email });
 
     if (!userToAdd) {
-      return res.status(404).json({ message: "User not found in the system. They must sign up first." });
+      return res.status(404).json({ message: "User not found in the system." });
     }
 
-    // 2. Organization Check
+    // Organization Check
     if (project.orgId) {
       const clerkClient = createClerkClient({ secretKey: process.env.CLERK_SECRET_KEY });
       try {
@@ -125,7 +124,7 @@ const addProjectMember = async (req, res) => {
 
         if (!memberships || memberships.length === 0 || !isActuallyMember) {
           return res.status(400).json({ 
-            message: "User is not in the Organization's Core Team. Please invite them to the Team first." 
+            message: "User is not in the Organization's Core Team." 
           });
         }
       } catch (error) {
@@ -133,22 +132,30 @@ const addProjectMember = async (req, res) => {
       }
     }
 
-    // 3. FIX: Check if already a member and return error
     if (project.members.includes(userToAdd.clerkId)) {
-      return res.status(400).json({ message: "User is already a member of this project" });
+      return res.status(400).json({ message: "User is already a member" });
     }
 
-    // 4. Add to project members
     project.members.push(userToAdd.clerkId);
     await project.save();
 
-    // 5. Send Notification
-    await Notification.create({
+    // Create Notification
+    const note = await Notification.create({
       userId: userToAdd.clerkId,
       message: `You have been added to the project: "${project.title}"`,
       type: 'PROJECT_ADD',
       projectId: project._id
     });
+
+    // SOCKET: Broadcast updates
+    const io = req.app.get("io");
+    if (io) {
+      // 1. Notify the specific user they were added
+      io.to(`user_${userToAdd.clerkId}`).emit("notification:new", note);
+      
+      // 2. Update the project room (so the member list updates live for everyone)
+      io.to(`project_${project._id}`).emit("project:updated", project);
+    }
 
     res.json({ message: "Member added", member: userToAdd });
   } catch (error) {

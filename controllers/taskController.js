@@ -4,7 +4,6 @@ import User from "../models/User.js";
 import nodemailer from "nodemailer";
 
 // @desc    Get tasks for a specific project
-// @route   GET /api/tasks/project/:projectId
 const getTasks = async (req, res) => {
   try {
     const { projectId } = req.params;
@@ -16,51 +15,61 @@ const getTasks = async (req, res) => {
 };
 
 // @desc    Create a new task
-// @route   POST /api/tasks
 const createTask = async (req, res) => {
   try {
-    // Zod middleware has already validated req.body
     const task = new Task(req.body);
     const createdTask = await task.save();
 
+    // ⚡ SOCKET: Broadcast to Project Room
+    const io = req.app.get("io");
+    if (io) {
+      io.to(`project_${createdTask.projectId}`).emit("task:created", createdTask);
+      console.log(`📡 Emitted task:created to project_${createdTask.projectId}`);
+    }
+
     // 3. Handle Notifications & Emails
     if (createdTask.assignees && createdTask.assignees.length > 0) {
-      // Filter out the creator (don't notify yourself)
       const assigneesToNotify = createdTask.assignees.filter(
         (id) => id !== req.auth.userId
       );
 
       if (assigneesToNotify.length > 0) {
-        // A. In-App Notifications (Existing Logic)
+        // A. In-App Notifications
         const notifications = assigneesToNotify.map((userId) => ({
           userId,
           message: `You have been assigned to task: "${createdTask.title}"`,
           type: "TASK_ASSIGN",
           projectId: createdTask.projectId,
         }));
-        await Notification.insertMany(notifications);
+        
+        // Save to DB
+        const savedNotifications = await Notification.insertMany(notifications);
 
-        // B. 👇 NEW: Send Emails
+        // ⚡ SOCKET: Notify specific users
+        if (io) {
+          savedNotifications.forEach((note) => {
+            io.to(`user_${note.userId}`).emit("notification:new", note);
+            console.log(`🔔 Notification sent to user_${note.userId}`);
+          });
+        }
+
+        // B. Send Emails (Keep existing logic)
         try {
-          // Fetch user details to get email addresses
           const usersToEmail = await User.find({
             clerkId: { $in: assigneesToNotify },
           });
 
-          // Configure Transporter (Use App Password for Gmail)
           const transporter = nodemailer.createTransport({
             service: "gmail",
             auth: {
-              user: process.env.EMAIL_USER, // Your Email
-              pass: process.env.EMAIL_PASS, // Your App Password
+              user: process.env.EMAIL_USER,
+              pass: process.env.EMAIL_PASS,
             },
           });
 
-          // Send emails in parallel
           await Promise.all(
             usersToEmail.map((user) => {
               if (!user.email) return;
-
               const mailOptions = {
                 from: `"Project Manager" <${process.env.EMAIL_USER}>`,
                 to: user.email,
@@ -73,25 +82,16 @@ const createTask = async (req, res) => {
                     <blockquote style="border-left: 4px solid #2563eb; padding-left: 10px; margin: 20px 0;">
                       <p><strong>Title:</strong> ${createdTask.title}</p>
                       <p><strong>Priority:</strong> ${createdTask.priority}</p>
-                      <p><strong>Due Date:</strong> ${
-                        createdTask.dueDate
-                          ? new Date(createdTask.dueDate).toLocaleDateString()
-                          : "No due date"
-                      }</p>
                     </blockquote>
-                    <p>Please check your dashboard for more details.</p>
                     <p>Best regards,<br/>The Team</p>
                   </div>
                 `,
               };
-
               return transporter.sendMail(mailOptions);
             })
           );
-          console.log("📧 Emails sent to assignees");
         } catch (emailErr) {
           console.error("❌ Failed to send emails:", emailErr);
-          // We don't fail the request here, just log the error
         }
       }
     }
@@ -104,12 +104,19 @@ const createTask = async (req, res) => {
 };
 
 // @desc    Delete a task
-// @route   DELETE /api/tasks/:id
 const deleteTask = async (req, res) => {
   try {
     const task = await Task.findById(req.params.id);
     if (task) {
+      const projectId = task.projectId;
       await task.deleteOne();
+
+      // ⚡ SOCKET: Update Project Board
+      const io = req.app.get("io");
+      if (io) {
+        io.to(`project_${projectId}`).emit("task:deleted", req.params.id);
+      }
+
       res.json({ message: "Task removed" });
     } else {
       res.status(404).json({ message: "Task not found" });
@@ -122,7 +129,6 @@ const deleteTask = async (req, res) => {
 const getUserTasks = async (req, res) => {
   try {
     const { userId } = req.params;
-    // Find tasks where assigneeId matches
     const tasks = await Task.find({ assignees: userId }).populate(
       "projectId",
       "title"
@@ -138,19 +144,14 @@ const getTaskById = async (req, res) => {
   try {
     const { id } = req.params;
     const userId = req.auth.userId;
-    // Check if user is Org Admin or Global Admin
     const isOrgAdmin = req.auth.orgRole === "org:admin";
-    const isGlobalAdmin =
-      req.auth.sessionClaims?.publicMetadata?.role === "admin";
+    const isGlobalAdmin = req.auth.sessionClaims?.publicMetadata?.role === "admin";
     const isAdmin = isOrgAdmin || isGlobalAdmin;
 
     const task = await Task.findById(id).populate("projectId", "title ownerId");
 
     if (!task) return res.status(404).json({ message: "Task not found" });
 
-    // PERMISSION CHECK:
-    // 1. Admin -> Allow
-    // 2. Assignee -> Allow
     const isAssignee = task.assignees.includes(userId);
 
     if (!isAdmin && !isAssignee) {
@@ -172,8 +173,7 @@ const updateTask = async (req, res) => {
     const updates = req.body;
     const userId = req.auth.userId;
     const isOrgAdmin = req.auth.orgRole === "org:admin";
-    const isGlobalAdmin =
-      req.auth.sessionClaims?.publicMetadata?.role === "admin";
+    const isGlobalAdmin = req.auth.sessionClaims?.publicMetadata?.role === "admin";
     const isAdmin = isOrgAdmin || isGlobalAdmin;
 
     const task = await Task.findById(id);
@@ -185,18 +185,21 @@ const updateTask = async (req, res) => {
       return res.status(403).json({ message: "Access Denied" });
     }
 
-    // ROLE-BASED UPDATE LOGIC
     if (isAdmin) {
-      // Admin can update everything
       Object.assign(task, updates);
     } else if (isAssignee) {
-      // Assignee can ONLY update Status and Attachments
       if (updates.status) task.status = updates.status;
       if (updates.attachments) task.attachments = updates.attachments;
-      // Note: We ignore other fields if sent by a non-admin
     }
 
     await task.save();
+
+    // ⚡ SOCKET: Real-time update
+    const io = req.app.get("io");
+    if (io) {
+      io.to(`project_${task.projectId}`).emit("task:updated", task);
+    }
+
     res.json(task);
   } catch (error) {
     console.error("Update Error:", error);
@@ -207,29 +210,25 @@ const updateTask = async (req, res) => {
 const inviteToTask = async (req, res) => {
   try {
     const { taskId } = req.params;
-    const { targetUserId } = req.body; // The person being invited
+    const { targetUserId } = req.body;
     const senderId = req.auth.userId;
 
     const task = await Task.findById(taskId);
     if (!task) return res.status(404).json({ message: "Task not found" });
 
-    // Ensure sender is actually assigned to the task (or is admin)
     const isAssignee = task.assignees.includes(senderId);
     const isAdmin = req.auth.orgRole === "org:admin";
 
     if (!isAssignee && !isAdmin) {
-      return res
-        .status(403)
-        .json({ message: "Only assignees can invite others." });
+      return res.status(403).json({ message: "Only assignees can invite others." });
     }
 
-    // Check if target is already assigned
     if (task.assignees.includes(targetUserId)) {
       return res.status(400).json({ message: "User is already assigned." });
     }
 
-    // Create Notification for Target User
-    await Notification.create({
+    // Create Notification
+    const note = await Notification.create({
       userId: targetUserId,
       message: `Help Request: Please help with task "${task.title}"`,
       type: "TASK_INVITE",
@@ -240,6 +239,12 @@ const inviteToTask = async (req, res) => {
       },
     });
 
+    // ⚡ SOCKET: Notify target
+    const io = req.app.get("io");
+    if (io) {
+      io.to(`user_${targetUserId}`).emit("notification:new", note);
+    }
+
     res.json({ message: "Invitation sent successfully" });
   } catch (error) {
     console.error(error);
@@ -247,48 +252,56 @@ const inviteToTask = async (req, res) => {
   }
 };
 
-//  Handle Accept/Decline
 const respondToTaskInvite = async (req, res) => {
   try {
-    const { notificationId, action } = req.body; // action = 'ACCEPT' or 'DECLINE'
+    const { notificationId, action } = req.body;
     const userId = req.auth.userId;
 
     const notification = await Notification.findById(notificationId);
-    if (!notification)
-      return res.status(404).json({ message: "Notification not found" });
+    if (!notification) return res.status(404).json({ message: "Notification not found" });
 
-    // Security Check
-    if (notification.userId !== userId)
-      return res.status(403).json({ message: "Not authorized" });
+    if (notification.userId !== userId) return res.status(403).json({ message: "Not authorized" });
 
     const { taskId, senderId } = notification.metadata || {};
+    const io = req.app.get("io"); // Get IO instance
 
     if (action === "ACCEPT") {
-      // 1. Add user to task assignees
-      await Task.findByIdAndUpdate(taskId, {
-        $addToSet: { assignees: userId }, // Prevent duplicates
-      });
+      const updatedTask = await Task.findByIdAndUpdate(
+        taskId, 
+        { $addToSet: { assignees: userId } }, 
+        { new: true } // Return updated doc
+      );
 
-      // 2. Notify Sender
-      await Notification.create({
+      // ⚡ SOCKET: Update project board with new assignee
+      if (io) {
+        io.to(`project_${notification.projectId}`).emit("task:updated", updatedTask);
+      }
+
+      // Notify Sender
+      const replyNote = await Notification.create({
         userId: senderId,
         message: `Accepted: User has joined task`,
         type: "INFO",
         projectId: notification.projectId,
       });
+
+      // ⚡ SOCKET: Notify sender
+      if (io) io.to(`user_${senderId}`).emit("notification:new", replyNote);
+
     } else {
-      // Decline: Just notify sender
-      await Notification.create({
+      // Decline
+      const replyNote = await Notification.create({
         userId: senderId,
         message: `Declined: User cannot help with task`,
         type: "INFO",
         projectId: notification.projectId,
       });
+
+      // ⚡ SOCKET: Notify sender
+      if (io) io.to(`user_${senderId}`).emit("notification:new", replyNote);
     }
 
-    // 3. Delete the invitation notification so it can't be clicked again
     await notification.deleteOne();
-
     res.json({ message: `Invitation ${action.toLowerCase()}ed` });
   } catch (error) {
     console.error(error);
