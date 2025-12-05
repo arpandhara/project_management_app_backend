@@ -109,7 +109,7 @@ const addProjectMember = async (req, res) => {
       return res.status(404).json({ message: "User not found in the system. They must sign up first." });
     }
 
-    // 2. Organization Check (from previous step)
+    // 2. Organization Check
     if (project.orgId) {
       const clerkClient = createClerkClient({ secretKey: process.env.CLERK_SECRET_KEY });
       try {
@@ -133,19 +133,22 @@ const addProjectMember = async (req, res) => {
       }
     }
 
-    // 3. Add to project members
-    if (!project.members.includes(userToAdd.clerkId)) {
-      project.members.push(userToAdd.clerkId);
-      await project.save();
-
-      // ---> 4. NEW: SEND NOTIFICATION
-      await Notification.create({
-        userId: userToAdd.clerkId,
-        message: `You have been added to the project: "${project.title}"`,
-        type: 'PROJECT_ADD',
-        projectId: project._id
-      });
+    // 3. FIX: Check if already a member and return error
+    if (project.members.includes(userToAdd.clerkId)) {
+      return res.status(400).json({ message: "User is already a member of this project" });
     }
+
+    // 4. Add to project members
+    project.members.push(userToAdd.clerkId);
+    await project.save();
+
+    // 5. Send Notification
+    await Notification.create({
+      userId: userToAdd.clerkId,
+      message: `You have been added to the project: "${project.title}"`,
+      type: 'PROJECT_ADD',
+      projectId: project._id
+    });
 
     res.json({ message: "Member added", member: userToAdd });
   } catch (error) {
