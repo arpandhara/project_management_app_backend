@@ -3,6 +3,8 @@ import Notification from "../models/Notification.js";
 import User from "../models/User.js";
 import nodemailer from "nodemailer";
 import Project from "../models/Project.js";
+import Activity from "../models/Activity.js";
+import { deleteFileFromUrl } from "../utils/supabase.js";
 
 // @desc    Get tasks for a specific project
 const getTasks = async (req, res) => {
@@ -112,27 +114,53 @@ const createTask = async (req, res) => {
 const deleteTask = async (req, res) => {
   try {
     const task = await Task.findById(req.params.id);
-    if (task) {
-      const projectId = task.projectId;
-      const assignees = task.assignees; 
-      await task.deleteOne();
+    if (!task) return res.status(404).json({ message: "Task not found" });
 
-      const io = req.app.get("io");
-      if (io) {
-        // Existing: Update Project Board
-        io.to(`project_${projectId}`).emit("task:deleted", req.params.id);
+    const projectId = task.projectId;
+    const assignees = task.assignees;
 
-        // Notify Assignees (Updates Dashboard)
-        assignees.forEach((userId) => {
-          io.to(`user_${userId}`).emit("dashboard:update");
-        });
-      }
+    // 1. GATHER FILES TO DELETE
+    const filesToDelete = [];
 
-      res.json({ message: "Task removed" });
-    } else {
-      res.status(404).json({ message: "Task not found" });
+    // A. From Task Attachments
+    if (task.attachments && task.attachments.length > 0) {
+      task.attachments.forEach(att => {
+        if (att.url) filesToDelete.push(att.url);
+      });
     }
+
+    // B. From Activities (Uploads)
+    const activities = await Activity.find({ taskId: task._id });
+    activities.forEach(act => {
+      if (act.type === 'UPLOAD' && act.metadata?.fileUrl) {
+        filesToDelete.push(act.metadata.fileUrl);
+      }
+    });
+
+    // 2. DELETE FILES FROM SUPABASE (Parallel)
+    if (filesToDelete.length > 0) {
+      console.log(`🗑️ Deleting ${filesToDelete.length} files for task...`);
+      await Promise.all(filesToDelete.map(url => deleteFileFromUrl(url)));
+    }
+
+    // 3. DELETE ACTIVITY LOGS
+    await Activity.deleteMany({ taskId: task._id });
+
+    // 4. DELETE THE TASK
+    await task.deleteOne();
+
+    // 5. SOCKET EVENTS
+    const io = req.app.get("io");
+    if (io) {
+      io.to(`project_${projectId}`).emit("task:deleted", req.params.id);
+      assignees.forEach((userId) => {
+        io.to(`user_${userId}`).emit("dashboard:update");
+      });
+    }
+
+    res.json({ message: "Task and all associated data removed" });
   } catch (error) {
+    console.error(error);
     res.status(500).json({ message: "Server Error" });
   }
 };
@@ -187,24 +215,52 @@ const updateTask = async (req, res) => {
     const task = await Task.findById(id);
     if (!task) return res.status(404).json({ message: "Task not found" });
 
-    // Apply updates
+    // 1. Detect Changes for Activity Log
+    let activityLog = null;
+    
+    // Check Status Change
+    if (updates.status && updates.status !== task.status) {
+      activityLog = {
+        type: 'STATUS_CHANGE',
+        content: `changed status from "${task.status}" to "${updates.status}"`
+      };
+    }
+    // Check Priority Change
+    else if (updates.priority && updates.priority !== task.priority) {
+        activityLog = {
+          type: 'PRIORITY_CHANGE',
+          content: `changed priority to "${updates.priority}"`
+        };
+    }
+
+    // 2. Apply updates
     Object.assign(task, updates);
     await task.save();
 
     const io = req.app.get("io");
 
-    //Real-time update
-    if (io) {
-      io.to(`project_${task.projectId}`).emit("task:updated", task);
+    // 3. Create Activity Record if something changed
+    if (activityLog) {
+       const user = await User.findOne({ clerkId: userId });
+       const newActivity = await Activity.create({
+         taskId: task._id,
+         userId,
+         userName: user ? `${user.firstName} ${user.lastName}` : "Unknown",
+         userPhoto: user?.photo,
+         type: activityLog.type,
+         content: activityLog.content
+       });
+       
+       if (io) io.to(`project_${task.projectId}`).emit("task:activity", newActivity);
     }
 
-    // Notify Admin if marked DONE
+    // 4. Notify Admin if marked DONE (Restored Logic)
     if (updates.status === "Done") {
       const project = await Project.findById(task.projectId);
       if (project) {
-        // Find Admin
         const adminId = project.ownerId; 
         
+        // Only notify if the person completing it is NOT the admin
         if (userId !== adminId) {
           const note = await Notification.create({
             userId: adminId,
@@ -217,6 +273,11 @@ const updateTask = async (req, res) => {
           if (io) io.to(`user_${adminId}`).emit("notification:new", note);
         }
       }
+    }
+
+    // 5. Emit General Task Update
+    if (io) {
+      io.to(`project_${task.projectId}`).emit("task:updated", task);
     }
 
     res.json(task);
@@ -422,7 +483,7 @@ const disapproveTask = async (req, res) => {
   }
 };
 
-// Cron Job Logic (Call this from index.js)
+// Cron Job Logic 
 const deleteExpiredTasks = async (io) => {
   try {
     const fifteenDaysAgo = new Date();
@@ -463,6 +524,65 @@ const deleteExpiredTasks = async (io) => {
   }
 };
 
+const addTaskActivity = async (req, res) => {
+    try {
+        const { id } = req.params; // Task ID
+        const { type, content, metadata } = req.body; // type: 'COMMENT' or 'UPLOAD'
+        const userId = req.auth.userId;
+
+        const task = await Task.findById(id);
+        if (!task) return res.status(404).json({ message: "Task not found" });
+
+        const user = await User.findOne({ clerkId: userId });
+
+        //Create Activity
+        const activity = await Activity.create({
+            taskId: id,
+            userId,
+            userName: user ? `${user.firstName} ${user.lastName}` : "User",
+            userPhoto: user?.photo,
+            type,
+            content,
+            metadata
+        });
+
+        //If it's an upload, ALSO push to Task attachments for gallery view
+        if (type === 'UPLOAD' && metadata?.fileUrl) {
+            task.attachments.push({
+                name: metadata.fileName,
+                url: metadata.fileUrl,
+                type: metadata.fileType || 'IMAGE'
+            });
+            await task.save();
+        }
+
+        // Emit Socket Event
+        const io = req.app.get("io");
+        if (io) {
+            io.to(`project_${task.projectId}`).emit("task:activity", activity);
+            if (type === 'UPLOAD') {
+                io.to(`project_${task.projectId}`).emit("task:updated", task);
+            }
+        }
+
+        res.status(201).json(activity);
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: "Failed to add activity" });
+    }
+};
+
+// Get Activities for a Task
+const getTaskActivities = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const activities = await Activity.find({ taskId: id }).sort({ createdAt: -1 });
+        res.json(activities);
+    } catch (error) {
+        res.status(500).json({ message: "Failed to load history" });
+    }
+};
+
 export {
   getTasks,
   createTask,
@@ -474,5 +594,7 @@ export {
   respondToTaskInvite,
   approveTask,
   disapproveTask,
-  deleteExpiredTasks
+  deleteExpiredTasks,
+  addTaskActivity,
+  getTaskActivities
 };

@@ -8,6 +8,10 @@ import {
   deleteProject,
   addProjectMember,
   getProjectMembers,
+  updateProjectSettings,
+  removeProjectMember,
+  createProjectEvent,
+  getProjectEvents
 } from "../controllers/projectController.js";
 import { requireAuth, requireRole } from "../middleware/authMiddleware.js";
 
@@ -30,5 +34,10 @@ router.delete("/:id", requireAuth, requireRole(["admin"]), deleteProject);
 
 router.get('/:id/members', requireAuth, getProjectMembers);
 router.put('/:id/members', requireAuth, addProjectMember);
+
+router.put("/:id/settings", requireAuth, requireRole(["admin", "org:admin"]), updateProjectSettings);
+router.delete("/:id/members", requireAuth, requireRole(["admin", "org:admin"]), removeProjectMember);
+router.post("/:id/events", requireAuth, createProjectEvent);
+router.get("/:id/events", requireAuth, getProjectEvents);
 
 export default router;

@@ -11,7 +11,9 @@ import {
   inviteToTask,
   respondToTaskInvite,
   approveTask,
-  disapproveTask
+  disapproveTask,
+  addTaskActivity,
+  getTaskActivities
 } from "../controllers/taskController.js";
 import { requireAuth, requireRole } from "../middleware/authMiddleware.js";
 
@@ -36,4 +38,6 @@ router.post("/:taskId/invite", requireAuth, inviteToTask);
 router.post("/invite/respond", requireAuth, respondToTaskInvite);
 router.put("/:id/approve", requireAuth, requireRole(["admin", "org:admin"]), approveTask);
 router.put("/:id/disapprove", requireAuth, requireRole(["admin", "org:admin"]), disapproveTask);
+router.post("/:id/activity", requireAuth, addTaskActivity);
+router.get("/:id/activity", requireAuth, getTaskActivities);
 export default router;

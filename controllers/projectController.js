@@ -1,24 +1,26 @@
-import Project from '../models/Project.js';
-import User from "../models/User.js"; 
+import Project from "../models/Project.js";
+import User from "../models/User.js";
 import Task from "../models/Task.js";
 import Notification from "../models/Notification.js";
-import { createClerkClient } from '@clerk/clerk-sdk-node';
-
+import Event from "../models/Event.js";
+import Activity from "../models/Activity.js";
+import { deleteFileFromUrl } from "../utils/supabase.js";
+import { createClerkClient } from "@clerk/clerk-sdk-node";
 
 // @desc    Get all projects
 const getProjects = async (req, res) => {
   try {
-    const { userId } = req.auth; 
+    const { userId } = req.auth;
     const orgId = req.auth.orgId || req.query.orgId;
     let query;
     const targetUserId = req.query.userId || userId;
 
     if (orgId && orgId !== "undefined" && orgId !== "null") {
-      query = { orgId , members: targetUserId};
+      query = { orgId, members: targetUserId };
     } else {
-      query = { 
-        ownerId: userId, 
-        orgId: { $exists: false } 
+      query = {
+        ownerId: userId,
+        orgId: { $exists: false },
       };
     }
 
@@ -26,7 +28,7 @@ const getProjects = async (req, res) => {
     res.json(projects);
   } catch (error) {
     console.error(error);
-    res.status(500).json({ message: 'Server Error: Could not fetch projects' });
+    res.status(500).json({ message: "Server Error: Could not fetch projects" });
   }
 };
 
@@ -37,41 +39,43 @@ const getProjectById = async (req, res) => {
     if (project) {
       res.json(project);
     } else {
-      res.status(404).json({ message: 'Project not found' });
+      res.status(404).json({ message: "Project not found" });
     }
   } catch (error) {
     console.error(error);
-    if (error.kind === 'ObjectId') {
-      return res.status(404).json({ message: 'Project not found' });
+    if (error.kind === "ObjectId") {
+      return res.status(404).json({ message: "Project not found" });
     }
-    res.status(500).json({ message: 'Server Error' });
+    res.status(500).json({ message: "Server Error" });
   }
 };
 
 // @desc    Create a new project
 const createProject = async (req, res) => {
   try {
-    const { title, description, status, priority, startDate, dueDate } = req.body;
+    const { title, description, status, priority, startDate, dueDate } =
+      req.body;
     const { userId } = req.auth;
     const orgId = req.body.orgId || req.auth.orgId;
 
     const project = new Project({
       title,
-      description :  description || "No Description",
+      description: description || "No Description",
       status,
       priority,
       startDate,
       dueDate,
       ownerId: userId,
-      orgId: (orgId && orgId !== "undefined" && orgId !== "null") ? orgId : undefined,
-      members: [userId] 
+      orgId:
+        orgId && orgId !== "undefined" && orgId !== "null" ? orgId : undefined,
+      members: [userId],
     });
 
     const createdProject = await project.save();
     res.status(201).json(createdProject);
   } catch (error) {
     console.error(error);
-    res.status(400).json({ message: 'Invalid project data' });
+    res.status(400).json({ message: "Invalid project data" });
   }
 };
 
@@ -79,30 +83,51 @@ const createProject = async (req, res) => {
 const deleteProject = async (req, res) => {
   try {
     const project = await Project.findById(req.params.id);
-    if (project) {
-      const orgId = project.orgId;
+    if (!project) return res.status(404).json({ message: 'Project not found' });
 
-      // DELETE ALL TASKS associated with this project
-      await Task.deleteMany({ projectId: project._id });
+    const orgId = project.orgId;
 
-      // Delete the project itself
-      await project.deleteOne();
+    // 1. FIND ALL TASKS
+    const tasks = await Task.find({ projectId: project._id });
+    
+    // 2. LOOP THROUGH TASKS TO CLEANUP FILES & ACTIVITIES
+    // (We do this manually instead of relying on Task.deleteMany so we can catch the files)
+    for (const task of tasks) {
+        const filesToDelete = [];
 
-      //Socket Broadcast
-      const io = req.app.get("io");
-      if (io && orgId) {
-        io.to(`org_${orgId}`).emit("project:deleted", req.params.id);
-      }
+        // Task Attachments
+        task.attachments?.forEach(att => filesToDelete.push(att.url));
 
-      res.json({ message: 'Project and all associated tasks removed' });
-    } else {
-      res.status(404).json({ message: 'Project not found' });
+        // Activity Files
+        const activities = await Activity.find({ taskId: task._id });
+        activities.forEach(act => {
+            if (act.type === 'UPLOAD' && act.metadata?.fileUrl) {
+                filesToDelete.push(act.metadata.fileUrl);
+            }
+        });
+
+        // Delete Files
+        await Promise.all(filesToDelete.map(url => deleteFileFromUrl(url)));
+
+        // Delete Activities
+        await Activity.deleteMany({ taskId: task._id });
     }
+
+    // 3. DELETE ALL TASKS
+    await Task.deleteMany({ projectId: project._id });
+
+    // 4. DELETE PROJECT
+    await project.deleteOne();
+
+    // 5. SOCKET BROADCAST
+    const io = req.app.get("io");
+    if (io && orgId) {
+      io.to(`org_${orgId}`).emit("project:deleted", req.params.id);
+    }
+
+    res.json({ message: 'Project and all associated data (Tasks, Files, Logs) removed' });
   } catch (error) {
     console.error(error);
-    if (error.kind === 'ObjectId') {
-      return res.status(404).json({ message: 'Project not found' });
-    }
     res.status(500).json({ message: 'Server Error: Could not delete project' });
   }
 };
@@ -111,9 +136,9 @@ const deleteProject = async (req, res) => {
 // @route   PUT /api/projects/:id/members
 const addProjectMember = async (req, res) => {
   try {
-    const { email } = req.body; 
+    const { email } = req.body;
     const project = await Project.findById(req.params.id);
-    
+
     if (!project) return res.status(404).json({ message: "Project not found" });
 
     const userToAdd = await User.findOne({ email });
@@ -124,25 +149,33 @@ const addProjectMember = async (req, res) => {
 
     // Organization Check
     if (project.orgId) {
-      const clerkClient = createClerkClient({ secretKey: process.env.CLERK_SECRET_KEY });
+      const clerkClient = createClerkClient({
+        secretKey: process.env.CLERK_SECRET_KEY,
+      });
       try {
-        const response = await clerkClient.organizations.getOrganizationMembershipList({
-          organizationId: project.orgId,
-          userId: userToAdd.clerkId, 
-        });
+        const response =
+          await clerkClient.organizations.getOrganizationMembershipList({
+            organizationId: project.orgId,
+            userId: userToAdd.clerkId,
+          });
         const memberships = Array.isArray(response) ? response : response.data;
-        const isActuallyMember = memberships && memberships.some(mem => {
-           const memId = mem.publicUserData?.userId || mem.public_user_data?.user_id;
-           return memId === userToAdd.clerkId;
-        });
+        const isActuallyMember =
+          memberships &&
+          memberships.some((mem) => {
+            const memId =
+              mem.publicUserData?.userId || mem.public_user_data?.user_id;
+            return memId === userToAdd.clerkId;
+          });
 
         if (!memberships || memberships.length === 0 || !isActuallyMember) {
-          return res.status(400).json({ 
-            message: "User is not in the Organization's Core Team." 
+          return res.status(400).json({
+            message: "User is not in the Organization's Core Team.",
           });
         }
       } catch (error) {
-        return res.status(400).json({ message: "Could not verify organization membership." });
+        return res
+          .status(400)
+          .json({ message: "Could not verify organization membership." });
       }
     }
 
@@ -157,8 +190,8 @@ const addProjectMember = async (req, res) => {
     const note = await Notification.create({
       userId: userToAdd.clerkId,
       message: `You have been added to the project: "${project.title}"`,
-      type: 'PROJECT_ADD',
-      projectId: project._id
+      type: "PROJECT_ADD",
+      projectId: project._id,
     });
 
     // Broadcast updates
@@ -166,7 +199,7 @@ const addProjectMember = async (req, res) => {
     if (io) {
       // Notify the specific user they were added
       io.to(`user_${userToAdd.clerkId}`).emit("notification:new", note);
-      
+
       // Update the project room (so the member list updates live for everyone)
       io.to(`project_${project._id}`).emit("project:updated", project);
     }
@@ -184,7 +217,9 @@ const getProjectMembers = async (req, res) => {
     const project = await Project.findById(req.params.id);
     if (!project) return res.status(404).json({ message: "Project not found" });
 
-    const members = await User.find({ clerkId: { $in: project.members } }).select("firstName lastName email photo clerkId");
+    const members = await User.find({
+      clerkId: { $in: project.members },
+    }).select("firstName lastName email photo clerkId");
 
     res.json(members);
   } catch (error) {
@@ -193,11 +228,99 @@ const getProjectMembers = async (req, res) => {
   }
 };
 
-export { 
-  getProjects, 
-  getProjectById, 
-  createProject, 
+const updateProjectSettings = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { title, description } = req.body;
+
+    const project = await Project.findById(id);
+    if (!project) return res.status(404).json({ message: "Project not found" });
+
+    project.title = title || project.title;
+    project.description = description || project.description;
+    await project.save();
+
+    res.json(project);
+  } catch (error) {
+    res.status(500).json({ message: "Update failed" });
+  }
+};
+
+// 👇 NEW: Remove Member (Admin Only)
+const removeProjectMember = async (req, res) => {
+  try {
+    const { id } = req.params; // Project ID
+    const { userId } = req.body; // Member to remove
+
+    const project = await Project.findById(id);
+    if (!project) return res.status(404).json({ message: "Project not found" });
+
+    project.members = project.members.filter((m) => m !== userId);
+    await project.save();
+
+    const io = req.app.get("io");
+    if (io) {
+      // Kick the user out of the project room live
+      io.to(`project_${id}`).emit("project:member_removed", userId);
+      io.to(`project_${id}`).emit("project:updated", project);
+    }
+
+    res.json({ message: "Member removed" });
+  } catch (error) {
+    res.status(500).json({ message: "Failed to remove member" });
+  }
+};
+
+// 👇 NEW: Create Event (G-Meet)
+const createProjectEvent = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { title, startDate, meetLink } = req.body;
+
+    const event = await Event.create({
+      projectId: id,
+      title,
+      startDate,
+      meetLink,
+      createdBy: req.auth.userId,
+    });
+
+    const io = req.app.get("io");
+    if (io) {
+      io.to(`project_${id}`).emit("event:created", event);
+    }
+
+    res.status(201).json(event);
+  } catch (error) {
+    res.status(500).json({ message: "Failed to create event" });
+  }
+};
+
+// 👇 NEW: Get Events
+const getProjectEvents = async (req, res) => {
+  try {
+    const { id } = req.params;
+    // Get upcoming events
+    const events = await Event.find({
+      projectId: id,
+      startDate: { $gte: new Date() }, // Only future events
+    }).sort({ startDate: 1 });
+
+    res.json(events);
+  } catch (error) {
+    res.status(500).json({ message: "Failed to load events" });
+  }
+};
+
+export {
+  getProjects,
+  getProjectById,
+  createProject,
   deleteProject,
   addProjectMember,
-  getProjectMembers
+  getProjectMembers,
+  updateProjectSettings,
+  removeProjectMember,
+  createProjectEvent,
+  getProjectEvents,
 };
