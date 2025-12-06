@@ -21,7 +21,7 @@ const createTask = async (req, res) => {
     const task = new Task(req.body);
     const createdTask = await task.save();
 
-    // ⚡ SOCKET: Broadcast to Project Room (Fast enough to keep here)
+    // Broadcast to Project Room (Fast enough to keep here)
     const io = req.app.get("io");
     if (io) {
       io.to(`project_${createdTask.projectId}`).emit("task:created", createdTask);
@@ -38,7 +38,7 @@ const createTask = async (req, res) => {
           );
 
           if (assigneesToNotify.length > 0) {
-            // A. In-App Notifications (DB Write)
+            //  In-App Notifications
             const notifications = assigneesToNotify.map((userId) => ({
               userId,
               message: `You have been assigned to task: "${createdTask.title}"`,
@@ -48,14 +48,14 @@ const createTask = async (req, res) => {
 
             const savedNotifications = await Notification.insertMany(notifications);
 
-            // ⚡ SOCKET: Notify specific users
+            // Notify specific users
             if (io) {
               savedNotifications.forEach((note) => {
                 io.to(`user_${note.userId}`).emit("notification:new", note);
               });
             }
 
-            // B. Send Emails (The Heavy Operation)
+            // Send Emails (The Heavy Operation)
             const usersToEmail = await User.find({
               clerkId: { $in: assigneesToNotify },
             });
@@ -68,7 +68,7 @@ const createTask = async (req, res) => {
               },
             });
 
-            // We await here, but it only blocks this background function, not the user response
+            
             await Promise.all(
               usersToEmail.map((user) => {
                 if (!user.email) return;
@@ -95,14 +95,13 @@ const createTask = async (req, res) => {
           }
         }
       } catch (backgroundError) {
-        // Just log errors here, don't crash the server
         console.error("⚠️ Background Notification Error:", backgroundError);
       }
     })();
 
   } catch (error) {
     console.error("Create Task Error:", error);
-    // Only send error if we haven't responded yet
+    // Only send error if haven't responded yet
     if (!res.headersSent) {
       res.status(400).json({ message: "Invalid task data" });
     }
@@ -115,16 +114,15 @@ const deleteTask = async (req, res) => {
     const task = await Task.findById(req.params.id);
     if (task) {
       const projectId = task.projectId;
-      const assignees = task.assignees; // Save assignees before delete
-
+      const assignees = task.assignees; 
       await task.deleteOne();
 
       const io = req.app.get("io");
       if (io) {
-        // 1. Existing: Update Project Board
+        // Existing: Update Project Board
         io.to(`project_${projectId}`).emit("task:deleted", req.params.id);
 
-        // 2. ⭐ NEW: Notify Assignees (Updates Dashboard)
+        // Notify Assignees (Updates Dashboard)
         assignees.forEach((userId) => {
           io.to(`user_${userId}`).emit("dashboard:update");
         });
@@ -195,19 +193,18 @@ const updateTask = async (req, res) => {
 
     const io = req.app.get("io");
 
-    // ⚡ SOCKET: Real-time update
+    //Real-time update
     if (io) {
       io.to(`project_${task.projectId}`).emit("task:updated", task);
     }
 
-    // ⭐ NEW: Notify Admin if marked DONE
+    // Notify Admin if marked DONE
     if (updates.status === "Done") {
       const project = await Project.findById(task.projectId);
       if (project) {
-        // Find Admin (Owner or Org Admins) - For MVP assuming Owner
+        // Find Admin
         const adminId = project.ownerId; 
         
-        // Don't notify if the admin themselves marked it done
         if (userId !== adminId) {
           const note = await Notification.create({
             userId: adminId,
@@ -261,7 +258,7 @@ const inviteToTask = async (req, res) => {
       },
     });
 
-    // ⚡ SOCKET: Notify target
+    // Notify target
     const io = req.app.get("io");
     if (io) {
       io.to(`user_${targetUserId}`).emit("notification:new", note);
@@ -294,7 +291,7 @@ const respondToTaskInvite = async (req, res) => {
         { new: true } // Return updated doc
       );
 
-      // ⚡ SOCKET: Update project board with new assignee
+      // Update project board with new assignee
       if (io) {
         io.to(`project_${notification.projectId}`).emit("task:updated", updatedTask);
       }
@@ -307,7 +304,7 @@ const respondToTaskInvite = async (req, res) => {
         projectId: notification.projectId,
       });
 
-      // ⚡ SOCKET: Notify sender
+      // Notify sender
       if (io) io.to(`user_${senderId}`).emit("notification:new", replyNote);
 
     } else {
@@ -319,7 +316,7 @@ const respondToTaskInvite = async (req, res) => {
         projectId: notification.projectId,
       });
 
-      // ⚡ SOCKET: Notify sender
+      // Notify sender
       if (io) io.to(`user_${senderId}`).emit("notification:new", replyNote);
     }
 
@@ -334,7 +331,7 @@ const respondToTaskInvite = async (req, res) => {
 const approveTask = async (req, res) => {
   try {
     const { id } = req.params;
-    const { comment, adminName } = req.body; // Pass admin name from frontend or fetch user
+    const { comment, adminName } = req.body;
 
     const task = await Task.findById(id);
     if (!task) return res.status(404).json({ message: "Task not found" });
@@ -352,7 +349,7 @@ const approveTask = async (req, res) => {
 
     await task.save();
 
-    // ⚡ Socket Update
+    // Socket Update
     const io = req.app.get("io");
     if (io) io.to(`project_${task.projectId}`).emit("task:updated", task);
 
@@ -377,7 +374,7 @@ const approveTask = async (req, res) => {
   }
 };
 
-// ⭐ NEW: Disapprove Task
+// Disapprove Task
 const disapproveTask = async (req, res) => {
   try {
     const { id } = req.params;
@@ -386,7 +383,7 @@ const disapproveTask = async (req, res) => {
     const task = await Task.findById(id);
     if (!task) return res.status(404).json({ message: "Task not found" });
 
-    // Logic: Unapprove and move back to In Progress
+    //Unapprove and move back to In Progress
     task.isApproved = false;
     task.approvedAt = null;
     task.status = "In Progress";
@@ -425,7 +422,7 @@ const disapproveTask = async (req, res) => {
   }
 };
 
-// ⭐ NEW: Cron Job Logic (Call this from index.js)
+// Cron Job Logic (Call this from index.js)
 const deleteExpiredTasks = async (io) => {
   try {
     const fifteenDaysAgo = new Date();
@@ -438,7 +435,7 @@ const deleteExpiredTasks = async (io) => {
 
     if (tasksToDelete.length === 0) return;
 
-    // Group by project to find admins (Simplified: Assuming one global admin or project owner for notification)
+    // Group by project to find admins
     for (const task of tasksToDelete) {
         const project = await Project.findById(task.projectId);
         
@@ -453,7 +450,7 @@ const deleteExpiredTasks = async (io) => {
              if(io) io.to(`user_${project.ownerId}`).emit("notification:new", note);
         }
 
-        // Notify Room (to remove from UI)
+        // Notify Room 
         if(io) io.to(`project_${task.projectId}`).emit("task:deleted", task._id);
         
         await task.deleteOne();

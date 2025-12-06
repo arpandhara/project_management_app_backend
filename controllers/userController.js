@@ -5,7 +5,7 @@ import { createClerkClient } from '@clerk/clerk-sdk-node';
 // @route   GET /api/users
 const getUsers = async (req, res) => {
   try {
-    const users = await User.find().select("-clerkId"); // Exclude sensitive ID if needed
+    const users = await User.find().select("-clerkId");
     res.json(users);
   } catch (error) {
     res.status(500).json({ message: "Server Error" });

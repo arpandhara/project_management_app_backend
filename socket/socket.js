@@ -13,7 +13,7 @@ const initializeSocket = (httpServer) => {
   });
 
   io.on("connection", (socket) => {
-    console.log("🔌 Connected to socket:", socket.id);
+    // console.log("🔌 Connected to socket:", socket.id);
 
     // 1. User Room
     socket.on("setup", (userData) => {
@@ -32,7 +32,7 @@ const initializeSocket = (httpServer) => {
     socket.on("join_org", (orgId) => {
       if (orgId) {
         socket.join(`org_${orgId}`);
-        console.log(`Joined Org Room: org_${orgId}`);
+        // console.log(`Joined Org Room: org_${orgId}`);s
       }
     });
 

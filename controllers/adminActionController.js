@@ -4,6 +4,7 @@ import { createClerkClient } from '@clerk/clerk-sdk-node';
 import dotenv from "dotenv";
 import Project from "../models/Project.js";
 import Task from "../models/Task.js";
+import Notification from "../models/Notification.js";
 dotenv.config();
 
 const clerkClient = createClerkClient({ secretKey: process.env.CLERK_SECRET_KEY });
@@ -44,39 +45,49 @@ const requestDemotion = async (req, res) => {
 const approveDemotion = async (req, res) => {
   const { requestId } = req.params;
   const approverId = req.auth.userId;
+  const io = req.app.get("io"); // Get Socket IO
 
   try {
     const request = await AdminRequest.findById(requestId);
     if (!request) return res.status(404).json({ message: "Request not found" });
 
     if (request.requesterUserId === approverId) {
-      return res.status(403).json({ message: "You cannot approve your own request. Another admin is required." });
+      return res.status(403).json({ message: "You cannot approve your own request." });
     }
 
-    // 1. Update Organization Membership (Clerk)
+    // 1. Clerk & DB Updates
     await clerkClient.organizations.updateOrganizationMembership({
       organizationId: request.orgId,
       userId: request.targetUserId,
       role: "org:member"
     });
 
-    // 2. Update User Metadata (Clerk Global Role)
     await clerkClient.users.updateUserMetadata(request.targetUserId, {
-      publicMetadata: {
-        role: "member"
-      }
+      publicMetadata: { role: "member" }
     });
 
-    // 3. Update MongoDB User Role
-    await User.findOneAndUpdate(
-      { clerkId: request.targetUserId },
-      { role: "member" }
-    );
-
-    // Clear Request
+    await User.findOneAndUpdate({ clerkId: request.targetUserId }, { role: "member" });
     await AdminRequest.findByIdAndDelete(requestId);
 
-    res.json({ message: "Demotion approved and executed successfully." });
+    // 2. Create Notification
+    const note = await Notification.create({
+        userId: request.targetUserId,
+        message: "Your role has been updated to: Member",
+        type: "INFO",
+        read: false
+    });
+
+    // 3. SOCKET EVENTS
+    if (io) {
+        // Notify the user
+        io.to(`user_${request.targetUserId}`).emit("notification:new", note);
+        // Force user to refresh session (update permissions)
+        io.to(`user_${request.targetUserId}`).emit("session:refresh");
+        // Update everyone's Team List
+        io.to(`org_${request.orgId}`).emit("team:update");
+    }
+
+    res.json({ message: "Demotion approved and executed." });
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: "Failed to execute demotion." });
@@ -90,10 +101,8 @@ const getPendingRequests = async (req, res) => {
     
     if (!orgId) return res.json([]); 
 
-    // 1. Fetch requests
     const requests = await AdminRequest.find({ orgId }).lean(); // .lean() converts to plain JS object so we can add properties
 
-    // 2. Populate User Details (Requester & Target)
     const enhancedRequests = await Promise.all(requests.map(async (request) => {
       const requester = await User.findOne({ clerkId: request.requesterUserId }).select("firstName lastName");
       
@@ -120,29 +129,36 @@ const getPendingRequests = async (req, res) => {
 const promoteMember = async (req, res) => {
   const { targetUserId } = req.body;
   const orgId = req.auth.orgId || req.body.orgId;
+  const io = req.app.get("io");
 
   try {
-    // 1. Update Organization Membership (Clerk)
     await clerkClient.organizations.updateOrganizationMembership({
       organizationId: orgId,
       userId: targetUserId,
       role: "org:admin"
     });
 
-    // 2. Update User Metadata (Clerk Global Role)
     await clerkClient.users.updateUserMetadata(targetUserId, {
-      publicMetadata: {
-        role: "admin"
-      }
+      publicMetadata: { role: "admin" }
     });
 
-    // 3. Update MongoDB User Role
-    await User.findOneAndUpdate(
-      { clerkId: targetUserId },
-      { role: "admin" }
-    );
+    await User.findOneAndUpdate({ clerkId: targetUserId }, { role: "admin" });
 
-    res.json({ message: "Member promoted to Admin successfully." });
+    // Create Notification
+    const note = await Notification.create({
+        userId: targetUserId,
+        message: "Congratulations! You have been promoted to Admin.",
+        type: "INFO",
+        read: false
+    });
+
+    if (io) {
+        io.to(`user_${targetUserId}`).emit("notification:new", note);
+        io.to(`user_${targetUserId}`).emit("session:refresh");
+        io.to(`org_${orgId}`).emit("team:update");
+    }
+
+    res.json({ message: "Member promoted successfully." });
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: "Failed to promote member." });
@@ -199,7 +215,7 @@ const approveOrgDeletion = async (req, res) => {
     // 1. Delete from Clerk
     await clerkClient.organizations.deleteOrganization(orgId);
 
-    // 2. Clean up Local DB (Projects & Tasks)
+    // Clean up Local DB (Projects & Tasks)
     // Find all projects in this org first
     const projects = await Project.find({ orgId });
     const projectIds = projects.map(p => p._id);
@@ -212,7 +228,7 @@ const approveOrgDeletion = async (req, res) => {
     // Delete the projects themselves
     await Project.deleteMany({ orgId });
 
-    // 3. Delete All Pending Requests for this Org (cleanup)
+    // Delete All Pending Requests for this Org (cleanup)
     await AdminRequest.deleteMany({ orgId });
 
     res.json({ message: "Organization deleted successfully." });

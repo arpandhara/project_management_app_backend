@@ -82,13 +82,13 @@ const deleteProject = async (req, res) => {
     if (project) {
       const orgId = project.orgId;
 
-      // 2. DELETE ALL TASKS associated with this project
+      // DELETE ALL TASKS associated with this project
       await Task.deleteMany({ projectId: project._id });
 
-      // 3. Delete the project itself
+      // Delete the project itself
       await project.deleteOne();
 
-      // 4. Socket Broadcast (Keep UI in sync)
+      //Socket Broadcast
       const io = req.app.get("io");
       if (io && orgId) {
         io.to(`org_${orgId}`).emit("project:deleted", req.params.id);
@@ -161,13 +161,13 @@ const addProjectMember = async (req, res) => {
       projectId: project._id
     });
 
-    // SOCKET: Broadcast updates
+    // Broadcast updates
     const io = req.app.get("io");
     if (io) {
-      // 1. Notify the specific user they were added
+      // Notify the specific user they were added
       io.to(`user_${userToAdd.clerkId}`).emit("notification:new", note);
       
-      // 2. Update the project room (so the member list updates live for everyone)
+      // Update the project room (so the member list updates live for everyone)
       io.to(`project_${project._id}`).emit("project:updated", project);
     }
 
