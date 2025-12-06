@@ -8,12 +8,10 @@ export const deleteFileFromUrl = async (fileUrl) => {
   if (!fileUrl) return;
 
   try {
-    // Extract the file path from the public URL
-    // Format: .../storage/v1/object/public/task-assets/FILENAME.png
     const pathParts = fileUrl.split('/task-assets/');
     if (pathParts.length < 2) return;
     
-    const fileName = pathParts[1]; // Get everything after "task-assets/"
+    const fileName = decodeURIComponent(pathParts[1]); 
 
     const { error } = await supabase
       .storage

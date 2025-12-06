@@ -5,10 +5,10 @@ const projectSchema = mongoose.Schema(
     title: { type: String, required: true },
     description: { type: String , default: "No Description" },
     status: {
-      type: String,
-      enum: ["ACTIVE", "COMPLETED", "ARCHIVED"],
-      default: "ACTIVE",
-    },
+    type: String,
+    enum: ["ACTIVE", "COMPLETED", "ON_HOLD", "ARCHIVED", "active", "completed"], 
+    default: "ACTIVE"
+  },
     priority: {
       type: String,
       enum: ["HIGH", "MEDIUM", "LOW"],
