@@ -231,13 +231,11 @@ const getProjectMembers = async (req, res) => {
 const updateProjectSettings = async (req, res) => {
   try {
     const { id } = req.params;
-    // 👇 Extract status along with title and description
     const { title, description, status } = req.body;
 
     const project = await Project.findById(id);
     if (!project) return res.status(404).json({ message: "Project not found" });
 
-    // 👇 Update fields if they are provided
     project.title = title || project.title;
     project.description = description || project.description;
     project.status = status || project.status; // <--- Added this
