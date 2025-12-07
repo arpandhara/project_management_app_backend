@@ -87,50 +87,47 @@ const deleteProject = async (req, res) => {
 
     const orgId = project.orgId;
 
-    // 1. FIND ALL TASKS
+    //Find all tasks to get their IDs and attachments
     const tasks = await Task.find({ projectId: project._id });
-    
-    // 2. LOOP THROUGH TASKS TO CLEANUP FILES & ACTIVITIES
-    // (We do this manually instead of relying on Task.deleteMany so we can catch the files)
-    for (const task of tasks) {
-        const filesToDelete = [];
+    const taskIds = tasks.map(t => t._id);
 
-        // Task Attachments
-        task.attachments?.forEach(att => filesToDelete.push(att.url));
+    //Gather all file URLs (from Task Attachments & Activity Logs)
+    const fileDeletePromises = [];
 
-        // Activity Files
-        const activities = await Activity.find({ taskId: task._id });
-        activities.forEach(act => {
-            if (act.type === 'UPLOAD' && act.metadata?.fileUrl) {
-                filesToDelete.push(act.metadata.fileUrl);
-            }
+    // From Task Attachments
+    tasks.forEach(task => {
+        task.attachments?.forEach(att => {
+            if(att.url) fileDeletePromises.push(deleteFileFromUrl(att.url));
         });
+    });
 
-        // Delete Files
-        await Promise.all(filesToDelete.map(url => deleteFileFromUrl(url)));
+    // From Activities
+    const activities = await Activity.find({ taskId: { $in: taskIds } });
+    
+    activities.forEach(act => {
+        if (act.type === 'UPLOAD' && act.metadata?.fileUrl) {
+            fileDeletePromises.push(deleteFileFromUrl(act.metadata.fileUrl));
+        }
+    });
 
-        // Delete Activities
-        await Activity.deleteMany({ taskId: task._id });
-    }
+    // EXECUTE EVERYTHING IN PARALLEL
+    await Promise.all([
+        ...fileDeletePromises,
+        Activity.deleteMany({ taskId: { $in: taskIds } }), 
+        Task.deleteMany({ projectId: project._id }),       
+        Event.deleteMany({ projectId: project._id }),     
+        project.deleteOne()                                
+    ]);
 
-    // 3. DELETE ALL TASKS
-    await Task.deleteMany({ projectId: project._id });
-
-    // 4. DELETE PROJECT EVENTS (Fix for Issue #4)
-    await Event.deleteMany({ projectId: project._id });
-
-    // 5. DELETE PROJECT
-    await project.deleteOne();
-
-    // 6. SOCKET BROADCAST
+    // 4. Socket Broadcast
     const io = req.app.get("io");
     if (io && orgId) {
       io.to(`org_${orgId}`).emit("project:deleted", req.params.id);
     }
 
-    res.json({ message: 'Project and all associated data (Tasks, Files, Logs, Events) removed' });
+    res.json({ message: 'Project and all associated data removed' });
   } catch (error) {
-    console.error(error);
+    console.error("Delete Project Error:", error);
     res.status(500).json({ message: 'Server Error: Could not delete project' });
   }
 };
@@ -222,7 +219,7 @@ const getProjectMembers = async (req, res) => {
 
     const members = await User.find({
       clerkId: { $in: project.members },
-    }).select("firstName lastName email photo clerkId");
+    }).select("firstName lastName email photo clerkId").lean();
 
     res.json(members);
   } catch (error) {
@@ -310,7 +307,7 @@ const getProjectEvents = async (req, res) => {
     const events = await Event.find({
       projectId: id,
       startDate: { $gte: new Date() }, // Only future events
-    }).sort({ startDate: 1 });
+    }).sort({ startDate: 1 }).lean();
 
     res.json(events);
   } catch (error) {

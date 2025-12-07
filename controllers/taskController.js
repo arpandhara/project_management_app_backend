@@ -10,7 +10,7 @@ import { deleteFileFromUrl } from "../utils/supabase.js";
 const getTasks = async (req, res) => {
   try {
     const { projectId } = req.params;
-    const tasks = await Task.find({ projectId }).sort({ createdAt: -1 });
+    const tasks = await Task.find({ projectId }).sort({ createdAt: -1 }).lean();
     res.json(tasks);
   } catch (error) {
     res.status(500).json({ message: "Server Error" });
@@ -171,7 +171,7 @@ const getUserTasks = async (req, res) => {
     const tasks = await Task.find({ assignees: userId }).populate(
       "projectId",
       "title"
-    );
+    ).lean();
     res.json(tasks);
   } catch (error) {
     console.error(error);
@@ -187,7 +187,7 @@ const getTaskById = async (req, res) => {
     const isGlobalAdmin = req.auth.sessionClaims?.publicMetadata?.role === "admin";
     const isAdmin = isOrgAdmin || isGlobalAdmin;
 
-    const task = await Task.findById(id).populate("projectId", "title ownerId");
+    const task = await Task.findById(id).populate("projectId", "title ownerId").lean();
 
     if (!task) return res.status(404).json({ message: "Task not found" });
 
@@ -619,7 +619,7 @@ const addTaskActivity = async (req, res) => {
 const getTaskActivities = async (req, res) => {
     try {
         const { id } = req.params;
-        const activities = await Activity.find({ taskId: id }).sort({ createdAt: -1 });
+        const activities = await Activity.find({ taskId: id }).sort({ createdAt: -1 }).lean();
         res.json(activities);
     } catch (error) {
         res.status(500).json({ message: "Failed to load history" });

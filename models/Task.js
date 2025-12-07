@@ -42,4 +42,8 @@ const taskSchema = new mongoose.Schema({
   timestamps: true
 });
 
+taskSchema.index({ projectId: 1 }); 
+taskSchema.index({ assignees: 1 }); 
+taskSchema.index({ isApproved: 1, approvedAt: 1 });
+
 export default mongoose.model('Task', taskSchema);

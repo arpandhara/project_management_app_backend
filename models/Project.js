@@ -27,4 +27,8 @@ const projectSchema = mongoose.Schema(
   }
 );
 
+projectSchema.index({ orgId: 1 });
+projectSchema.index({ ownerId: 1 });
+projectSchema.index({ members: 1 });
+
 export default mongoose.model("Project", projectSchema);
