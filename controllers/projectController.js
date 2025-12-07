@@ -116,16 +116,19 @@ const deleteProject = async (req, res) => {
     // 3. DELETE ALL TASKS
     await Task.deleteMany({ projectId: project._id });
 
-    // 4. DELETE PROJECT
+    // 4. DELETE PROJECT EVENTS (Fix for Issue #4)
+    await Event.deleteMany({ projectId: project._id });
+
+    // 5. DELETE PROJECT
     await project.deleteOne();
 
-    // 5. SOCKET BROADCAST
+    // 6. SOCKET BROADCAST
     const io = req.app.get("io");
     if (io && orgId) {
       io.to(`org_${orgId}`).emit("project:deleted", req.params.id);
     }
 
-    res.json({ message: 'Project and all associated data (Tasks, Files, Logs) removed' });
+    res.json({ message: 'Project and all associated data (Tasks, Files, Logs, Events) removed' });
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: 'Server Error: Could not delete project' });

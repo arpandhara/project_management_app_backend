@@ -233,13 +233,29 @@ const updateTask = async (req, res) => {
         };
     }
 
-    // 2. Apply updates
+    // 2. CHECK FOR REMOVED ATTACHMENTS (Fix for Issue #1 & #2)
+    if (updates.attachments) {
+        const oldAttachments = task.attachments || [];
+        const newAttachments = updates.attachments; // The new array sent from frontend
+
+        // Identify attachments that are in 'old' but missing in 'new'
+        const removedAttachments = oldAttachments.filter(oldAtt => 
+            !newAttachments.some(newAtt => newAtt.url === oldAtt.url)
+        );
+
+        if (removedAttachments.length > 0) {
+            console.log(`🗑️ Removing ${removedAttachments.length} attachments from storage...`);
+            await Promise.all(removedAttachments.map(att => deleteFileFromUrl(att.url)));
+        }
+    }
+
+    // 3. Apply updates
     Object.assign(task, updates);
     await task.save();
 
     const io = req.app.get("io");
 
-    // 3. Create Activity Record if something changed
+    // 4. Create Activity Record if something changed
     if (activityLog) {
        const user = await User.findOne({ clerkId: userId });
        const newActivity = await Activity.create({
@@ -254,7 +270,7 @@ const updateTask = async (req, res) => {
        if (io) io.to(`project_${task.projectId}`).emit("task:activity", newActivity);
     }
 
-    // 4. Notify Admin if marked DONE (Restored Logic)
+    // 5. Notify Admin if marked DONE
     if (updates.status === "Done") {
       const project = await Project.findById(task.projectId);
       if (project) {
@@ -275,7 +291,7 @@ const updateTask = async (req, res) => {
       }
     }
 
-    // 5. Emit General Task Update
+    // 6. Emit General Task Update
     if (io) {
       io.to(`project_${task.projectId}`).emit("task:updated", task);
     }
