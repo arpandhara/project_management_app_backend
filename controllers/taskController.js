@@ -505,6 +505,7 @@ const deleteExpiredTasks = async (io) => {
     const fifteenDaysAgo = new Date();
     fifteenDaysAgo.setDate(fifteenDaysAgo.getDate() - 15);
 
+    // Find tasks that are approved and older than 15 days
     const tasksToDelete = await Task.find({
       isApproved: true,
       approvedAt: { $lte: fifteenDaysAgo }
@@ -512,11 +513,36 @@ const deleteExpiredTasks = async (io) => {
 
     if (tasksToDelete.length === 0) return;
 
-    // Group by project to find admins
+    console.log(`found ${tasksToDelete.length} tasks to auto-delete`);
+
     for (const task of tasksToDelete) {
-        const project = await Project.findById(task.projectId);
-        
+        const filesToDelete = [];
+
+        if (task.attachments && task.attachments.length > 0) {
+            task.attachments.forEach(att => {
+                if (att.url) filesToDelete.push(att.url);
+            });
+        }
+
+        //Get files from Activity Logs (Uploads)
+        const activities = await Activity.find({ taskId: task._id });
+        activities.forEach(act => {
+            if (act.type === 'UPLOAD' && act.metadata?.fileUrl) {
+                filesToDelete.push(act.metadata.fileUrl);
+            }
+        });
+
+        //Delete from Supabase
+        if (filesToDelete.length > 0) {
+            console.log(`🗑️ Auto-deleting ${filesToDelete.length} files for task ${task.title}...`);
+            await Promise.all(filesToDelete.map(url => deleteFileFromUrl(url)));
+        }
+
+        // Delete Activity Logs
+        await Activity.deleteMany({ taskId: task._id });
+
         // Notify Admin
+        const project = await Project.findById(task.projectId);
         if (project && project.ownerId) {
              const note = await Notification.create({
                 userId: project.ownerId,
@@ -530,10 +556,11 @@ const deleteExpiredTasks = async (io) => {
         // Notify Room 
         if(io) io.to(`project_${task.projectId}`).emit("task:deleted", task._id);
         
+        // Finally, delete the task document
         await task.deleteOne();
     }
     
-    console.log(`🧹 Auto-deleted ${tasksToDelete.length} approved tasks.`);
+    console.log(`🧹 Auto-deleted ${tasksToDelete.length} approved tasks and their files.`);
 
   } catch (error) {
     console.error("Auto-delete error:", error);
