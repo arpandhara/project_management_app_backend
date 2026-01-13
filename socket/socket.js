@@ -32,7 +32,7 @@ const initializeSocket = (httpServer) => {
     socket.on("join_org", (orgId) => {
       if (orgId) {
         socket.join(`org_${orgId}`);
-        // console.log(`Joined Org Room: org_${orgId}`);s
+        console.log(`🔌 Socket ${socket.id} joined Org Room: org_${orgId}`);
       }
     });
 
@@ -40,7 +40,7 @@ const initializeSocket = (httpServer) => {
       socket.leave(room);
     });
 
-    socket.on("disconnect", () => {});
+    socket.on("disconnect", () => { });
   });
 
   return io;

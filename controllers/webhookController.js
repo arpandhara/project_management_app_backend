@@ -73,8 +73,8 @@ export const clerkWebhook = async (req, res) => {
       console.error("❌ Error saving user:", error);
       return res.status(500).json({ message: "Database error" });
     }
-  } 
-  
+  }
+
   else if (eventType === "user.updated") {
     try {
       const primaryEmail = data.email_addresses?.[0]?.email_address;
@@ -93,8 +93,8 @@ export const clerkWebhook = async (req, res) => {
       console.error("Error updating user:", error);
       return res.status(500).json({ message: "Database error" });
     }
-  } 
-  
+  }
+
   else if (eventType === "user.deleted") {
     try {
       await User.findOneAndDelete({ clerkId: data.id });
@@ -109,13 +109,13 @@ export const clerkWebhook = async (req, res) => {
   // ------------------------------------------------------------------
   // 2. MEMBERSHIP SYNC (Fixes the Bug: Role Persistence)
   // ------------------------------------------------------------------
-  
+
   // CASE A: User Joins or Role Changes (Sync exact role)
   else if (eventType === "organizationMembership.created" || eventType === "organizationMembership.updated") {
     try {
       const userId = data.public_user_data?.user_id;
       const orgRole = data.role; // e.g., "org:admin" or "org:member"
-      
+
       // Determine Global Role based on Org Role
       const newGlobalRole = (orgRole === "org:admin") ? "admin" : "member";
 
@@ -127,6 +127,21 @@ export const clerkWebhook = async (req, res) => {
         await clerkClient.users.updateUserMetadata(userId, {
           publicMetadata: { role: newGlobalRole }
         });
+
+        // 3. Notify Team List to Update
+        const io = req.app.get("io");
+        if (io) {
+          const orgId = data.organization?.id;
+          console.log(`🔔 Webhook: Attempting to emit team:update to org_${orgId}`);
+          if (orgId) {
+            io.to(`org_${orgId}`).emit("team:update");
+            console.log(`✅ Webhook: Emitted team:update to org_${orgId}`);
+          } else {
+            console.log("❌ Webhook: Org ID missing for team:update");
+          }
+        } else {
+          console.log("❌ Webhook: Socket IO instance not found on req.app");
+        }
 
         console.log(`🔄 Role Synced for ${userId}: Now ${newGlobalRole}`);
       }
@@ -154,10 +169,21 @@ export const clerkWebhook = async (req, res) => {
         // 2. 👇 NEW: Downgrade User to 'member' globally
         // This ensures if they are kicked, they lose Admin status immediately.
         await User.findOneAndUpdate({ clerkId: userId }, { role: "member" });
-        
+
         await clerkClient.users.updateUserMetadata(userId, {
           publicMetadata: { role: "member" }
         });
+
+        // 3. Notify Frontend to Refresh User Session
+        const io = req.app.get("io");
+        if (io) {
+          io.to(`user_${userId}`).emit("session:refresh");
+
+          // 4. Notify Team List to Update
+          if (organizationId) {
+            io.to(`org_${organizationId}`).emit("team:update");
+          }
+        }
 
         console.log(`🔻 User ${userId} removed from Org. Downgraded to Member.`);
       }
@@ -185,7 +211,7 @@ export const clerkWebhook = async (req, res) => {
       const projectResult = await Project.deleteMany({ orgId });
 
       console.log(`✅ Organization Deleted: Cleaned up ${projectResult.deletedCount} projects.`);
-      
+
       // Note: We don't need to downgrade users here explicitly because 
       // Clerk usually fires 'organizationMembership.deleted' for members 
       // when the org is destroyed, which will trigger the logic above.

@@ -6,6 +6,17 @@ import Project from "../models/Project.js";
 import Activity from "../models/Activity.js";
 import { deleteFileFromUrl } from "../utils/supabase.js";
 
+
+const escapeHtml = (unsafe) => {
+  if (typeof unsafe !== 'string') return unsafe;
+  return unsafe
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+};
+
 // @desc    Get tasks for a specific project
 const getTasks = async (req, res) => {
   try {
@@ -70,22 +81,27 @@ const createTask = async (req, res) => {
               },
             });
 
+            const safeTitle = escapeHtml(createdTask.title);
+            const safePriority = escapeHtml(createdTask.priority);
+
             
             await Promise.all(
               usersToEmail.map((user) => {
                 if (!user.email) return;
+                const safeName = escapeHtml(user.firstName || "Member");
+
                 const mailOptions = {
                   from: `"Project Manager" <${process.env.EMAIL_USER}>`,
                   to: user.email,
-                  subject: `New Task Assigned: ${createdTask.title}`,
+                  subject: `New Task Assigned: ${safeTitle}`,
                   html: `
                     <div style="font-family: Arial, sans-serif; color: #333;">
                       <h2>New Task Assignment</h2>
-                      <p>Hi <strong>${user.firstName || "Member"}</strong>,</p>
+                      <p>Hi <strong>${safeName}</strong>,</p>
                       <p>You have been assigned to a new task:</p>
                       <blockquote style="border-left: 4px solid #2563eb; padding-left: 10px; margin: 20px 0;">
-                        <p><strong>Title:</strong> ${createdTask.title}</p>
-                        <p><strong>Priority:</strong> ${createdTask.priority}</p>
+                        <p><strong>Title:</strong> ${safeTitle}</p>
+                        <p><strong>Priority:</strong> ${safePriority}</p>
                       </blockquote>
                       <p>Best regards,<br/>The Team</p>
                     </div>
